@@ -17,7 +17,7 @@ run(N,W,R,BW) ->
     Repeat = lists:seq(1,R),
     spawn_n(N, fun() ->
                        erlang:display(erlang:statistics(run_queues)),
-                       [sleep_nif(W) || _ <- Repeat],
+                       [sleep(W) || _ <- Repeat],
                        erlang:display(erlang:statistics(run_queues)),
                        busywait(BW),
                        erlang:display(process_info(self(), [reductions])),
@@ -38,7 +38,18 @@ busywait(N) ->
 busywait_nif(_) ->
     not_loaded.
 
-sleep_nif(_) ->
+sleep(Microseconds) ->
+    Timeout = 2 * Microseconds,
+    ok = sleep_nif(Microseconds),
+    receive
+        {ok, _Slept} ->
+            ok
+    after
+        Timeout ->
+            throw({error, timeout, erlang:make_ref()})
+    end.
+
+sleep_nif(_Microseconds) ->
     not_loaded.
 
 init() ->

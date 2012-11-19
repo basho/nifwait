@@ -102,48 +102,52 @@ struct {                                                                \
 
 STAILQ_HEAD(arq, arq_entry) arq_head;
 struct arq_entry {
-  STAILQ_ENTRY(arq_entry) entries;
-  void (*fn)(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
   ErlNifEnv* env;
+  ErlNifPid pid;
   int argc;
-  ERL_NIF_TERM argv[];
+  void *args;
+  void (*fn)(ErlNifEnv*, ErlNifPid*, int, void *);
+  STAILQ_ENTRY(arq_entry) entries;
 };
 ErlNifEnv *arq_nif_env;
 ErlNifMutex *arq_mutex;
 ErlNifCond *arq_cnd;
 ErlNifTid arq_tid;
 
-/* An async NIF call is one that doesn't run on the scheduler thread, it
-   is run at some later point by the single worker thread for this NIF. So,
-   enqueue this request, signal we have new work and return control of the
-   scheduler thread to the beam as fast a possible. */
-#define ASYNC_NIF_DECL(name) \
-  static void __async__ ## name(ErlNifEnv*, int, const ERL_NIF_TERM[]);\
-  static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])\
-  {                                                                            \
-    struct arq_entry *r;                                                       \
-    r = malloc(sizeof(struct arq_entry));                                      \
-    r->fn = __async__ ## name;                                                 \
-    r->env = env;                                                              \
-    r->argc = argc;                                                            \
-    enif_mutex_lock(arq_mutex);                                                \
-    STAILQ_INSERT_HEAD(&arq_head, r, entries);                                 \
-    enif_mutex_unlock(arq_mutex);                                              \
-    enif_cond_signal(arq_cnd);                                                 \
-    return ATOM_OK;                                                            \
-  }                                                                            \
-  static void __async__ ## name
+#define ASYNC_NIF_DECL(name, block)                                     \
+  struct name ## _args block;                                           \
+  static void q_ ## name(ErlNifEnv*, ErlNifPid*, int, struct name ## _args *); \
+  static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
+    struct name ## _args *args = malloc(sizeof(struct name ## _args));  \
+    if (!args) return enif_make_tuple2(env,                             \
+                 enif_make_atom(env, "error"),                          \
+                 enif_make_atom(env, "enomem"));                        \
+    do
+
+#define ASYNC_NIF_RETURN(name, result, block)                           \
+  } while(0);                                                           \
+  struct arq_entry *r;                                                  \
+  r = malloc(sizeof(struct arq_entry));                                 \
+  r->env = env;                                                         \
+  if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {             \
+    free(r);                                                            \
+    return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "pid")); \
+  }                                                                     \
+  r->args = (void *)args;                                               \
+  r->fn = (void (*)(ErlNifEnv *, ErlNifPid*, int, void *))q_ ## name;   \
+  enif_mutex_lock(arq_mutex);                                           \
+  STAILQ_INSERT_HEAD(&arq_head, r, entries);                            \
+  enif_mutex_unlock(arq_mutex);                                         \
+  enif_cond_signal(arq_cnd);                                            \
+  return result;                                                        \
+  }                                                                     \
+  static void q_ ## name(ErlNifEnv *env, ErlNifPid *pid, int argc, struct name ## _args *args) { \
+    do block while(0);
 
 #define ASYNC_NIF_INIT() if (!arq_init()) return -1;
 #define ASYNC_NIF_SHUTDOWN() arq_shutdown();
 
-#define ASYNC_NIF_BEGIN()
-#define ASYNC_NIF_RETURN(msg)
-#define ASYNC_NIF_REPLY(msg) do {                                              \
-    ErlNifPid *pid;                                                            \
-    enif_self(env, pid);                                                       \
-    enif_send(env, pid, arq_nif_env, msg);                                     \
-  } while(0)
+#define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg); free(args);
 
 static int arq_alive = 0;
 static void *arq_worker_fn(void *args)
@@ -155,11 +159,11 @@ static void *arq_worker_fn(void *args)
       struct arq_entry *e = STAILQ_LAST(&arq_head, arq_entry, entries);
       STAILQ_REMOVE(&arq_head, STAILQ_LAST(&arq_head, arq_entry, entries), arq_entry, entries);
       enif_mutex_unlock(arq_mutex);
-      e->fn(e->env, e->argc, e->argv);
+      e->fn(e->env, &(e->pid), e->argc, e->args);
       free(e);
     } else {
       enif_cond_wait(arq_cnd, arq_mutex);
-      goto new_work;
+      if (arq_alive) goto new_work;
     }
   }
   return 0;
@@ -185,6 +189,7 @@ static void arq_shutdown(void)
 
   /* stop, join the worker thread */
   arq_alive = 0;
+  enif_cond_signal(arq_cnd);                                            \
   enif_thread_join(arq_tid, &exit_value);
 
   /* deallocate anything left in the queue */

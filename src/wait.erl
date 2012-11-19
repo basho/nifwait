@@ -35,13 +35,15 @@ busywait(0) ->
 busywait(N) ->
     busywait(N-1).
 
-busywait_nif(_) ->
+busywait_nif(_Count, _Pid) ->
     not_loaded.
 
 sleep(Microseconds) ->
     Timeout = 2 * Microseconds,
-    ok = sleep_nif(Microseconds),
+    ok = sleep_nif(Microseconds, self()),
     receive
+        {error, _Reason}=Error ->
+            Error;
         {ok, _Slept} ->
             ok
     after
@@ -49,7 +51,7 @@ sleep(Microseconds) ->
             throw({error, timeout, erlang:make_ref()})
     end.
 
-sleep_nif(_Microseconds) ->
+sleep_nif(_Microseconds, _Pid) ->
     not_loaded.
 
 init() ->

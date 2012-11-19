@@ -42,9 +42,12 @@ sleep(Microseconds) ->
     Timeout = 2 * Microseconds,
     ok = sleep_nif(Microseconds, self()),
     receive
+        {eror, discarded}=Error ->
+            Error;
         {error, _Reason}=Error ->
             Error;
-        {ok, _Slept} ->
+        {ok, Slept} ->
+            io:format("slept ~p~n", [Slept]),
             ok
     after
         Timeout ->

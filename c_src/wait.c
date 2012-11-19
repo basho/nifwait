@@ -10,7 +10,8 @@
 static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_OK;
 
-ASYNC_NIF_DECL(busywait_nif, { unsigned int count; })
+  
+ASYNC_NIF_DECL(busywait_nif, { unsigned int count; }, {})
 {
   if(!enif_get_uint(env, argv[0], &args->count))
     return ATOM_ERROR;
@@ -22,7 +23,7 @@ ASYNC_NIF_DECL(busywait_nif, { unsigned int count; })
     });
 }
 
-ASYNC_NIF_DECL(sleep_nif, { unsigned int count; })
+ASYNC_NIF_DECL(sleep_nif, { unsigned int count; }, {})
 {
   if(!enif_get_uint(env, argv[0], &(args->count)))
     return ATOM_ERROR;

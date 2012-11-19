@@ -1,7 +1,7 @@
-#ifndef __ARQ_H__
-#define __ARQ_H__
+#ifndef __ASYNC_NIF_H__
+#define __ASYNC_NIF_H__
 
-/* BEGIN: include "queue.h" */
+/* BEGIN: include "queue.h" BSD 3-Clause License */
 
 #define __offsetof(st, m) \
      ((size_t) ( (char *)&((st *)0)->m - (char *)0 ))
@@ -107,6 +107,7 @@ struct arq_entry {
   int argc;
   void *args;
   void (*fn)(ErlNifEnv*, ErlNifPid*, int, void *);
+  void (*release)(ErlNifEnv*, void *);
   STAILQ_ENTRY(arq_entry) entries;
 };
 ErlNifEnv *arq_nif_env;
@@ -114,8 +115,9 @@ ErlNifMutex *arq_mutex;
 ErlNifCond *arq_cnd;
 ErlNifTid arq_tid;
 
-#define ASYNC_NIF_DECL(name, block)                                     \
+#define ASYNC_NIF_DECL(name, block, release)                            \
   struct name ## _args block;                                           \
+  static void r_ ## name(ErlNifEnv *env, struct name ## _args *args) release \
   static void q_ ## name(ErlNifEnv*, ErlNifPid*, int, struct name ## _args *); \
   static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
     struct name ## _args *args = malloc(sizeof(struct name ## _args));  \
@@ -130,13 +132,15 @@ ErlNifTid arq_tid;
   r = malloc(sizeof(struct arq_entry));                                 \
   r->env = env;                                                         \
   if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {             \
+    r_ ## name(env, args);                                              \
     free(r);                                                            \
     return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "pid")); \
   }                                                                     \
   r->args = (void *)args;                                               \
   r->fn = (void (*)(ErlNifEnv *, ErlNifPid*, int, void *))q_ ## name;   \
+  r->release = (void (*)(ErlNifEnv *, void *))r_ ## name;               \
   enif_mutex_lock(arq_mutex);                                           \
-  STAILQ_INSERT_HEAD(&arq_head, r, entries);                            \
+  STAILQ_INSERT_TAIL(&arq_head, r, entries);                            \
   enif_cond_signal(arq_cnd);                                            \
   enif_mutex_unlock(arq_mutex);                                         \
   return result;                                                        \
@@ -152,27 +156,28 @@ ErlNifTid arq_tid;
 static int arq_alive = 0;
 static void *arq_worker_fn(void *args)
 {
-  while(arq_alive) {
-    enif_mutex_lock(arq_mutex);
-    new_work:
-    if (!STAILQ_EMPTY(&arq_head)) {
-      struct arq_entry *e = STAILQ_LAST(&arq_head, arq_entry, entries);
-      STAILQ_REMOVE(&arq_head, STAILQ_LAST(&arq_head, arq_entry, entries), arq_entry, entries);
+  struct arq_entry *e;
+  do {
+    enif_mutex_lock(arq_mutex); work:
+    e = NULL;
+    if (arq_alive && ((e = STAILQ_FIRST(&arq_head)) != NULL)) {
+      STAILQ_REMOVE_HEAD(&arq_head, entries);
       enif_mutex_unlock(arq_mutex);
       e->fn(e->env, &(e->pid), e->argc, e->args);
+      e->release(e->env, e->args);
       free(e);
     } else {
       enif_cond_wait(arq_cnd, arq_mutex);
-      if (arq_alive) goto new_work;
+      goto work;
     }
-  }
+  } while(1);
   return 0;
 }
 
-static int arq_init(void)
+static int arq_init()
 {
   arq_nif_env = enif_alloc_env();
-  arq_mutex = enif_mutex_create("wait_arq__mutex");
+  arq_mutex = enif_mutex_create("wait_arq_mutex");
   arq_cnd = enif_cond_create("arq work enqueued");
   enif_mutex_lock(arq_mutex);
   STAILQ_INIT(&arq_head);
@@ -194,13 +199,14 @@ static void arq_shutdown(void)
 
   /* deallocate anything left in the queue */
   enif_mutex_lock(arq_mutex);
-  while (!STAILQ_EMPTY(&arq_head)) {
-    struct arq_entry *e = STAILQ_LAST(&arq_head, arq_entry, entries);
+  struct arq_entry *e = NULL;
+  STAILQ_FOREACH(e, &arq_head, entries) {
     STAILQ_REMOVE(&arq_head, STAILQ_LAST(&arq_head, arq_entry, entries), arq_entry, entries);
+    e->release(e->env, e->args);
     free(e);
   }
   enif_mutex_unlock(arq_mutex);
   enif_thread_join(arq_tid, &exit_value);
 }
 
-#endif
+#endif // __ASYNC_NIF_H__

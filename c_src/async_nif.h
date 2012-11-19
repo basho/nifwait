@@ -3,8 +3,11 @@
 
 /* BEGIN: include "queue.h" BSD 3-Clause License */
 
+#ifndef __offsetof
 #define __offsetof(st, m) \
      ((size_t) ( (char *)&((st *)0)->m - (char *)0 ))
+#endif
+
 /*
  * Singly-linked Tail queue declarations.
  */

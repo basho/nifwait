@@ -40,7 +40,9 @@ busywait_nif(_Count, _Pid) ->
 
 sleep(Microseconds) ->
     Timeout = 2 * Microseconds,
-    ok = sleep_nif(Microseconds, self()),
+    {ok, Metric} = sleep_nif(Microseconds, self()),
+    io:format("queue depth: ~p~n", [Metric]),
+    erlang:bump_reductions(Metric),
     receive
         {eror, discarded}=Error ->
             Error;

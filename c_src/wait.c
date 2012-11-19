@@ -10,30 +10,81 @@
 static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_OK;
 
+ASYNC_NIF_DECL(busywait_nif,
+  {
+    /* Store your arguments during the work block here,
+       this becomes a struct {} which you later use in the
+       work block: `args->___` */
+    unsigned int count;
+  },
+  {
+    /* Pre-conditions, gather values from arguments
+       Returns: {ok, Metric} | {error, Reason}
+       `Metric` is just a non-descript way to say queue-depth
+       which could be used to adjust the reductions and create
+       back pressure in the VM and help the scheduler do the
+       right thing. */
+    if(!enif_get_uint(env, argv[0], &args->count))
+      return ATOM_ERROR;
+  },
+  {
+    /* Perform work in this block.
+       Sends async reply to provided PID in argv[argc-1]
 
-ASYNC_NIF_DECL(busywait_nif, { unsigned int count; }, {})
-{
-  if(!enif_get_uint(env, argv[0], &args->count))
-    return ATOM_ERROR;
+       An call into a NIF function that doesn't block the scheduler
+       always looks like:
+ 
+       do_something_async_nif(_Arg1, _Arg2, _Pid) ->
+         nif_not_loaded.
 
-  ASYNC_NIF_RETURN(busywait_nif, ATOM_OK, {
-      for(; args->count > 0; --(args->count)) {  }
-      ERL_NIF_TERM msg = enif_make_tuple2(env, ATOM_OK, enif_make_int(env, args->count));
-      ASYNC_NIF_REPLY(msg);
-    });
-}
+       do_something(AnArg, AnotherArg) ->
+         Result =
+          case do_something_async_nif(Arg1, Arg2, self()) of
+            {ok, Metric} ->
+              erlang:bump_reductions(Metric * Magic),
+              receive
+                {eror, discarded}=Error ->
+                    %% Work unit was not executed, requeue it.
+                    Error;
+                {error, _Reason}=Error ->
+                    %% Work unit returned an error.
+                    Error;
+                {ok, Result} ->
+                    Result
+            after
+                Timeout ->
+                    throw({error, timeout, erlang:make_ref()})
+            end
+          end,
+          ...
+        end.
+    */
+    while(args->count > 0) { args->count--; }
+    ERL_NIF_TERM msg = enif_make_tuple2(env, ATOM_OK, enif_make_int(env, args->count));
+    ASYNC_NIF_REPLY(msg);
+  },
+  {
+    /* Release resources allocted to hold arguments in this
+       block.  This block will be called:
+       1) when the work is finished
+       2) during shutdown when the work queue is destroyed
+       3) if something goes wrong setting up the work block
+    */
+    /* NOTHING ALLOCATED/RETAINED so nothing to do here. */
+  });
 
-ASYNC_NIF_DECL(sleep_nif, { unsigned int count; }, {})
-{
-  if(!enif_get_uint(env, argv[0], &(args->count)))
-    return ATOM_ERROR;
-
-  ASYNC_NIF_RETURN(sleep_nif, ATOM_OK, {
-      usleep(args->count);
-      ERL_NIF_TERM msg = enif_make_tuple2(env, ATOM_OK, enif_make_int(env, args->count));
-      ASYNC_NIF_REPLY(msg);
-    });
-}
+ASYNC_NIF_DECL(sleep_nif,
+  { unsigned int count; }, 
+  {
+    if(!enif_get_uint(env, argv[0], &(args->count)))
+      return ATOM_ERROR;
+  },
+  {
+    usleep(args->count);
+    ERL_NIF_TERM msg = enif_make_tuple2(env, ATOM_OK, enif_make_int(env, args->count));
+    ASYNC_NIF_REPLY(msg);
+  },
+  {});
 
 static ErlNifFunc nif_funcs[] =
 {

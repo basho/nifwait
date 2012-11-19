@@ -107,8 +107,8 @@ struct arq_entry {
   ErlNifPid pid;
   int argc;
   void *args;
-  void (*fn)(ErlNifEnv*, ErlNifPid*, int, void *);
-  void (*release)(ErlNifEnv*, void *);
+  void (*fn_work)(ErlNifEnv*, ErlNifPid*, int, void *);
+  void (*fn_post)(ErlNifEnv*, void *);
   STAILQ_ENTRY(arq_entry) entries;
 };
 STAILQ_HEAD(arq, arq_entry) arq_head = STAILQ_HEAD_INITIALIZER(arq_head);
@@ -118,44 +118,51 @@ static ErlNifMutex *arq_mutex;
 static ErlNifCond *arq_cnd;
 static ErlNifTid arq_tid;
 
-#define ASYNC_NIF_DECL(name, block, release)                            \
-  struct name ## _args block;                                           \
-  static void r_ ## name(ErlNifEnv *env, struct name ## _args *args) release \
-  static void q_ ## name(ErlNifEnv*, ErlNifPid*, int, struct name ## _args *); \
-  static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
-  struct name ## _args *args = enif_alloc(sizeof(struct name ## _args)); \
-    if (!args) return enif_make_tuple2(env,                             \
-                 enif_make_atom(env, "error"),                          \
-                 enif_make_atom(env, "enomem"));                        \
-    do
 
-#define ASYNC_NIF_RETURN(name, result, block)                           \
-  } while(0);                                                           \
-  struct arq_entry *r;                                                  \
-  r = enif_alloc(sizeof(struct arq_entry));                             \
-  r->env = env;                                                         \
-  if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {             \
-    r_ ## name(env, args);                                              \
-    enif_free(r);                                                       \
-    return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "pid")); \
-  }                                                                     \
-  r->args = (void *)args;                                               \
-  r->fn = (void (*)(ErlNifEnv *, ErlNifPid*, int, void *))q_ ## name;   \
-  r->release = (void (*)(ErlNifEnv *, void *))r_ ## name;               \
-  enif_mutex_lock(arq_mutex);                                           \
-  STAILQ_INSERT_TAIL(&arq_head, r, entries);                            \
-  arq_depth++;                                                          \
-  enif_cond_signal(arq_cnd);                                            \
-  enif_mutex_unlock(arq_mutex);                                         \
-  return enif_make_tuple2(env, result, enif_make_int(env, arq_depth));  \
-  }                                                                     \
-  static void q_ ## name(ErlNifEnv *env, ErlNifPid *pid, int argc, struct name ## _args *args) { \
-    do block while(0);
+#define ET2_2A(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_atom(env, B))
+#define ET2_1A1I(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_int(env, B))
+
+#define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
+  struct name ## _args frame;                                           \
+  static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
+    struct name ## _args *args = enif_alloc(sizeof(struct name ## _args)); \
+    if (!args) return ET2_2A("error", "enomem");                        \
+    struct arq_entry *r = enif_alloc(sizeof(struct arq_entry));         \
+    if (!r) { enif_free(args); return ET2_2A("error", "enomem"); }      \
+    do pre_block while(0);                                              \
+    void (*fn_work)(ErlNifEnv*, ErlNifPid*, int, struct name ## _args *) = \
+    ({                                                                  \
+      void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, int argc, struct name ## _args *args) work_block \
+      __fn_work__;                                                      \
+    });                                                                 \
+    void (*fn_post)(ErlNifEnv*, struct name ## _args*) =                \
+    ({                                                                  \
+      void __fn_post__ (ErlNifEnv *env, struct name ## _args *args) post_block \
+      __fn_post__;                                                      \
+    });                                                                 \
+    r->env = env;                                                       \
+    if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {           \
+      fn_post(env, args);                                               \
+      enif_free(r);                                                     \
+      return ET2_2A("error", "pid");                                    \
+    }                                                                   \
+    r->args = (void *)args;                                             \
+    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, int, void *))fn_work;\
+    r->fn_post = (void (*)(ErlNifEnv *, void *))fn_post;                \
+    enif_mutex_lock(arq_mutex);                                         \
+    STAILQ_INSERT_TAIL(&arq_head, r, entries);                          \
+    arq_depth++;                                                        \
+    enif_cond_signal(arq_cnd);                                          \
+    enif_mutex_unlock(arq_mutex);                                       \
+    return ET2_1A1I("ok", arq_depth);                                   \
+  }
 
 #define ASYNC_NIF_INIT() if (!arq_init()) return -1;
 #define ASYNC_NIF_SHUTDOWN() arq_shutdown();
 
-#define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg); enif_free(args);
+#define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg);            \
+  r->fn_post(env, args);                                                \
+  enif_free(args)                                                       \
 
 static int arq_alive = 0;
 static void *arq_worker_fn(void *args)
@@ -168,8 +175,8 @@ static void *arq_worker_fn(void *args)
       STAILQ_REMOVE_HEAD(&arq_head, entries);
       arq_depth--;
       enif_mutex_unlock(arq_mutex);
-      e->fn(e->env, &(e->pid), e->argc, e->args);
-      e->release(e->env, e->args);
+      e->fn_work(e->env, &(e->pid), e->argc, e->args);
+      e->fn_post(e->env, e->args);
       enif_free(e);
     } else {
       enif_cond_wait(arq_cnd, arq_mutex);
@@ -208,7 +215,7 @@ static void arq_shutdown(void)
   struct arq_entry *e = NULL;
   STAILQ_FOREACH(e, &arq_head, entries) {
     STAILQ_REMOVE(&arq_head, STAILQ_LAST(&arq_head, arq_entry, entries), arq_entry, entries);
-    e->release(e->env, e->args);
+    e->fn_post(e->env, e->args);
     arq_depth--;
     enif_free(e);
   }

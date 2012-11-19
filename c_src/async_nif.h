@@ -124,12 +124,22 @@ static ErlNifTid arq_tid;
 
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
-  static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
+  static ERL_NIF_TERM name(ErlNifEnv* caller_env, int argc, const ERL_NIF_TERM caller_argv[]) { \
     struct name ## _args *args = enif_alloc(sizeof(struct name ## _args)); \
+    ErlNifEnv *env;                                                   \
     if (!args) return ET2_2A("error", "enomem");                        \
     struct arq_entry *r = enif_alloc(sizeof(struct arq_entry));         \
     if (!r) { enif_free(args); return ET2_2A("error", "enomem"); }      \
+    env = enif_alloc_env();                                             \
+    ERL_NIF_TERM *argv = enif_alloc(sizeof(ERL_NIF_TERM) * argc);       \
+    int i;                                                              \
+    for(i = 0; i < argc; ++i) {                                         \
+      ERL_NIF_TERM tmp;                                                 \
+      tmp = enif_make_copy(env, caller_argv[i]);                        \
+      argv[i] = tmp;                                                    \
+    }                                                                   \
     do pre_block while(0);                                              \
+    enif_free(argv);                                                    \
     void (*fn_work)(ErlNifEnv*, ErlNifPid*, int, struct name ## _args *) = \
     ({                                                                  \
       void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, int argc, struct name ## _args *args) work_block \
@@ -143,6 +153,7 @@ static ErlNifTid arq_tid;
     r->env = env;                                                       \
     if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {           \
       fn_post(env, args);                                               \
+      enif_free_env(env);                                               \
       enif_free(r);                                                     \
       return ET2_2A("error", "pid");                                    \
     }                                                                   \
@@ -177,6 +188,7 @@ static void *arq_worker_fn(void *args)
       enif_mutex_unlock(arq_mutex);
       e->fn_work(e->env, &(e->pid), e->argc, e->args);
       e->fn_post(e->env, e->args);
+      enif_free_env(e->env);
       enif_free(e);
     } else {
       enif_cond_wait(arq_cnd, arq_mutex);

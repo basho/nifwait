@@ -28,9 +28,11 @@ ASYNC_NIF_DECL(sleep_nif, { unsigned int count; })
     return ATOM_ERROR;
 
   ASYNC_NIF_RETURN(sleep_nif, ATOM_OK, {
+      printf("sleeping...\n");
       usleep(args->count);
       ERL_NIF_TERM msg = enif_make_tuple2(env, ATOM_OK, enif_make_int(env, args->count));
       ASYNC_NIF_REPLY(msg);
+      printf("done!\n");
     });
 }
 

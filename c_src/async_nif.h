@@ -137,8 +137,8 @@ ErlNifTid arq_tid;
   r->fn = (void (*)(ErlNifEnv *, ErlNifPid*, int, void *))q_ ## name;   \
   enif_mutex_lock(arq_mutex);                                           \
   STAILQ_INSERT_HEAD(&arq_head, r, entries);                            \
-  enif_mutex_unlock(arq_mutex);                                         \
   enif_cond_signal(arq_cnd);                                            \
+  enif_mutex_unlock(arq_mutex);                                         \
   return result;                                                        \
   }                                                                     \
   static void q_ ## name(ErlNifEnv *env, ErlNifPid *pid, int argc, struct name ## _args *args) { \

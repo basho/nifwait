@@ -43,24 +43,17 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
+  static void fn_work ## name (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) \
+       work_block;                                                      \
+  static void fn_post ## name (struct name ## _args *args) {            \
+    do post_block while(0);                                             \
+    enif_free(args);                                                    \
+  }                                                                     \
   static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
     struct name ## _args on_stack_args;                                 \
     struct name ## _args *args = &on_stack_args;                        \
     struct name ## _args *copy_of_args;                                 \
     struct anif_req_entry *r;                                           \
-    void (*fn_work)(ErlNifEnv*, ErlNifPid*, struct name ## _args *) =   \
-    ({                                                                  \
-      void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) work_block \
-      __fn_work__;                                                      \
-    });                                                                 \
-    void (*fn_post)(struct name ## _args*) =                            \
-    ({                                                                  \
-      void __fn_post__ (struct name ## _args *args) {                   \
-        do post_block while(0);                                         \
-        enif_free(args);                                                \
-      }                                                                 \
-      __fn_post__;                                                      \
-    });                                                                 \
     ErlNifPid pid;                                                      \
     if (!enif_self(env, &pid))                                          \
       return ET2_2A("error", "pid");                                    \
@@ -73,20 +66,20 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
     do pre_block while(0);                                              \
     r = enif_alloc(sizeof(struct anif_req_entry));                      \
     if (!r) {                                                           \
-      fn_post(args);                                                    \
+      fn_post ## name (args);                                                    \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     copy_of_args = enif_alloc(sizeof(struct name ## _args));            \
     if (!copy_of_args) {                                                \
-      fn_post(args);                                                    \
+      fn_post ## name (args);                                                    \
       enif_free(r);                                                     \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     memcpy(copy_of_args, args, sizeof(struct name ## _args));           \
     memcpy(&(r->pid), &pid, sizeof(ErlNifPid));                         \
     r->args = (void *)copy_of_args;                                     \
-    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;    \
-    r->fn_post = (void (*)(void *))fn_post;                             \
+    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work ## name ; \
+    r->fn_post = (void (*)(void *))fn_post ## name;                     \
     anif_enqueue_req(r);                                                \
     return ET2_1A1I("ok", anif_req_count);                              \
   }

@@ -30,18 +30,17 @@ ASYNC_NIF_DECL(busywait_nif,
       return ATOM_ERROR;
   },
   {
-    /* Perform work in this block.
-       Sends async reply to provided PID in argv[argc-1]
+    /* Perform work in this block, sends async reply to calling process.
 
        An call into a NIF function that doesn't block the scheduler
        always looks like:
  
-       do_something_async_nif(_Arg1, _Arg2, _Pid) ->
+       do_something_async_nif(_Arg1, _Arg2) ->
          nif_not_loaded.
 
        do_something(AnArg, AnotherArg) ->
          Result =
-          case do_something_async_nif(Arg1, Arg2, self()) of
+          case do_something_async_nif(Arg1, Arg2) of
             {ok, Metric} ->
               erlang:bump_reductions(Metric * Magic),
               receive
@@ -68,7 +67,10 @@ ASYNC_NIF_DECL(busywait_nif,
   },
   {
     /* Release resources allocted to hold arguments in this
-       block.  This block will be called:
+       block.
+       Normally this should be a few enif_free(args->___) calls.
+
+       This block will be called:
        1) when the work is finished
        2) during shutdown when the work queue is destroyed
        3) if something goes wrong setting up the work block
@@ -91,8 +93,8 @@ ASYNC_NIF_DECL(sleep_nif,
 
 static ErlNifFunc nif_funcs[] =
 {
-  {"busywait_nif", 2, busywait_nif},
-  {"sleep_nif", 2, sleep_nif}
+  {"busywait_nif", 1, busywait_nif},
+  {"sleep_nif", 1, sleep_nif}
 };
 
 static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)

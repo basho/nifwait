@@ -26,7 +26,6 @@ STAILQ_HEAD(reqs, anif_req_entry) anif_reqs = STAILQ_HEAD_INITIALIZER(anif_reqs)
 struct anif_worker_entry {
   ErlNifTid tid;
   ErlNifEnv *env;
-  ErlNifCond *cnd;
   unsigned int worker_num;
   LIST_ENTRY(anif_worker_entry) entries;
 };
@@ -36,10 +35,11 @@ static volatile unsigned int anif_req_count = 0;
 static volatile unsigned int anif_shutdown = 0;
 static ErlNifMutex *anif_req_mutex = NULL;
 static ErlNifMutex *anif_worker_mutex = NULL;
+static ErlNifCond *anif_cnd = NULL;
 static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 
 #define ET2_2A(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_atom(env, B))
-#define ET2_1A1I(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_int(env, B))
+#define ET2_1A1I(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_double(env, B))
 
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
@@ -64,7 +64,7 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       }                                                                 \
       __fn_post__;                                                      \
     });                                                                 \
-    if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {           \
+    if (!enif_self(env, &(r->pid))) {                                   \
       fn_post(args);                                                    \
       enif_free(r);                                                     \
       return ET2_2A("error", "pid");                                    \
@@ -80,7 +80,6 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
     r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;    \
     r->fn_post = (void (*)(void *))fn_post;                             \
     anif_enqueue_req(r);                                                \
-    /* TODO: We could provide #active threads too. */                   \
     return ET2_1A1I("ok", anif_req_count);                              \
   }
 
@@ -96,7 +95,9 @@ static void anif_enqueue_req(struct anif_req_entry *r)
   enif_mutex_lock(anif_req_mutex);
   STAILQ_INSERT_TAIL(&anif_reqs, r, entries);
   anif_req_count++;
+  fprintf(stderr, "enqueued work (q:%d)\n", anif_req_count); fflush(stderr);
   enif_mutex_unlock(anif_req_mutex);
+  enif_cond_broadcast(anif_cnd);
 }
 
 static void *anif_worker_fn(void *arg)
@@ -111,27 +112,21 @@ static void *anif_worker_fn(void *arg)
   do {
     /* Examine the request queue, are there things to be done? */
     enif_mutex_lock(anif_req_mutex); check_again_for_work:
+    fprintf(stderr, "wfn tid(%d):\tlooking for work (q:%d)\n", this->worker_num, anif_req_count); fflush(stderr);
     if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
       /* Queue is empty, join the list of idol workers and wait for work */
       enif_mutex_lock(anif_worker_mutex);
       LIST_INSERT_HEAD(&anif_idol_workers, this, entries);
       enif_mutex_unlock(anif_worker_mutex);
-      enif_cond_wait(this->cnd, anif_req_mutex);
+      enif_cond_wait(anif_cnd, anif_req_mutex);
       if (anif_shutdown) {
         enif_mutex_unlock(anif_req_mutex);
         break; /* Exit the do/while loop. */
       }
       goto check_again_for_work;
     } else {
-      /* `req` is our work request and we hold the lock.
-
-         There may be more than one request waiting on a worker thread
-         so take this opportunity to signal more threads to do work. */
-      struct anif_worker_entry *next_worker;
-      for (int num = 1; (next_worker = LIST_NEXT(next_worker, entries)); num++) {
-        if (num < (anif_req_count < ANIF_MAX_WORKERS - 1) ? anif_req_count : ANIF_MAX_WORKERS - 1)
-          enif_cond_signal(next_worker->cnd);
-      }
+      /* `req` is our work request and we hold the lock. */
+      enif_cond_broadcast(anif_cnd);
 
       /* Clear the worker's environment as it's invalid after each use. */
       enif_clear_env(this->env);
@@ -149,6 +144,7 @@ static void *anif_worker_fn(void *arg)
       enif_mutex_unlock(anif_req_mutex);
 
       /* Finally, let's do the work! :) */
+      fprintf(stderr, "wfn tid(%d):\tworking\n", this->worker_num); fflush(stderr);
       req->assigned_to_worker = this->worker_num;
       req->fn_work(this->env, &(req->pid), req->args);
       req->fn_post(req->args);
@@ -162,14 +158,12 @@ static void *anif_worker_fn(void *arg)
 static void anif_unload(void)
 {
   /* Don't shutdown more than once at a time. */
-  if (anif_shutdown)
+  if (anif_shutdown) /* TODO */
     return;
 
   /* Signal the worker threads, stop what you're doing and exit. */
   anif_shutdown = 1;
-  for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
-    enif_cond_signal(anif_worker_entries[i].cnd);
-  }
+  enif_cond_broadcast(anif_cnd);
 
   /* Join for the now exiting worker threads. */
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
@@ -195,8 +189,8 @@ static void anif_unload(void)
   /* Clean up resources owned by the now exited worker threads. */
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
     enif_free_env(anif_worker_entries[i].env);
-    enif_cond_destroy(anif_worker_entries[i].cnd);
   }
+  enif_cond_destroy(anif_cnd);
   /* Not strictly necessary. */
   memset(anif_worker_entries, sizeof(struct anif_worker_entry) * ANIF_MAX_WORKERS, 0);
 
@@ -219,6 +213,7 @@ static int anif_init(void)
 
   anif_req_mutex = enif_mutex_create("anif_req stailq");
   anif_worker_mutex = enif_mutex_create("anif_worker list");
+  anif_cnd = enif_cond_create("anif_worker");
 
   /* Setup the requests management. */
   anif_req_count = 0;
@@ -229,7 +224,6 @@ static int anif_init(void)
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; i++) {
     anif_worker_entries[i].worker_num = i;
     anif_worker_entries[i].env = enif_alloc_env();
-    anif_worker_entries[i].cnd = enif_cond_create("anif_worker");
     enif_thread_create("anif_worker", &anif_worker_entries[i].tid,
                        &anif_worker_fn, (void*)&anif_worker_entries[i], NULL);
   }

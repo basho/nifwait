@@ -35,12 +35,12 @@ busywait(0) ->
 busywait(N) ->
     busywait(N-1).
 
-busywait_nif(_Count, _Pid) ->
+busywait_nif(_Count) ->
     not_loaded.
 
 sleep(Microseconds) ->
     Timeout = 2 * Microseconds,
-    {ok, Metric} = sleep_nif(Microseconds, self()),
+    {ok, Metric} = sleep_nif(Microseconds),
     erlang:yield(),
     io:format("queue depth: ~p~n", [Metric]),
     erlang:bump_reductions(Metric * 100),
@@ -57,7 +57,7 @@ sleep(Microseconds) ->
             throw({error, timeout, erlang:make_ref()})
     end.
 
-sleep_nif(_Microseconds, _Pid) ->
+sleep_nif(_Microseconds) ->
     not_loaded.
 
 init() ->

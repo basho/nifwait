@@ -29,7 +29,7 @@ struct anif_worker_entry {
   unsigned int worker_num;
   LIST_ENTRY(anif_worker_entry) entries;
 };
-LIST_HEAD(idol_workers, anif_worker_entry) anif_idol_workers = LIST_HEAD_INITIALIZER(anif_worker);
+LIST_HEAD(idle_workers, anif_worker_entry) anif_idle_workers = LIST_HEAD_INITIALIZER(anif_worker);
 
 static volatile unsigned int anif_req_count = 0;
 static volatile unsigned int anif_shutdown = 0;
@@ -61,6 +61,15 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       }                                                                 \
       __fn_post__;                                                      \
     });                                                                 \
+    ErlNifPid pid;                                                      \
+    if (!enif_self(env, &pid))                                          \
+      return ET2_2A("error", "pid");                                    \
+    if (anif_shutdown) {                                                \
+      enif_send(NULL, &pid, env,                                        \
+                enif_make_tuple2(env, enif_make_atom(env, "error"),     \
+                                 enif_make_atom(env, "shutdown")));     \
+      return ET2_2A("error", "shutdown");                               \
+    }                                                                   \
     do pre_block while(0);                                              \
     r = enif_alloc(sizeof(struct anif_req_entry));                      \
     if (!r) {                                                           \
@@ -74,11 +83,7 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     memcpy(copy_of_args, args, sizeof(struct name ## _args));           \
-    if (!enif_self(env, &(r->pid))) {                                   \
-      fn_post(args);                                                    \
-      enif_free(r);                                                     \
-      return ET2_2A("error", "pid");                                    \
-    }                                                                   \
+    memcpy(&(r->pid), &pid, sizeof(ErlNifPid));                         \
     r->args = (void *)copy_of_args;                                     \
     r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;    \
     r->fn_post = (void (*)(void *))fn_post;                             \
@@ -104,20 +109,20 @@ static void anif_enqueue_req(struct anif_req_entry *r)
 
 static void *anif_worker_fn(void *arg)
 {
-  struct anif_worker_entry *this = (struct anif_worker_entry *)arg;
+  struct anif_worker_entry *worker = (struct anif_worker_entry *)arg;
   struct anif_req_entry *req = NULL;
 
   /*
    * Workers are active while there is work on the queue to do and
-   * only in the idol list when they are waiting on new work.
+   * only in the idle list when they are waiting on new work.
    */
-  do {
+  while(!anif_shutdown) {
     /* Examine the request queue, are there things to be done? */
     enif_mutex_lock(anif_req_mutex); check_again_for_work:
-    if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
-      /* Queue is empty, join the list of idol workers and wait for work */
+    if (!anif_shutdown && (req = STAILQ_FIRST(&anif_reqs)) == NULL) {
+      /* Queue is empty, join the list of idle workers and wait for work */
       enif_mutex_lock(anif_worker_mutex);
-      LIST_INSERT_HEAD(&anif_idol_workers, this, entries);
+      LIST_INSERT_HEAD(&anif_idle_workers, worker, entries);
       enif_mutex_unlock(anif_worker_mutex);
       enif_cond_wait(anif_cnd, anif_req_mutex);
       if (anif_shutdown) {
@@ -130,14 +135,14 @@ static void *anif_worker_fn(void *arg)
       enif_cond_broadcast(anif_cnd);
 
       /* Clear the worker's environment as it's invalid after each use. */
-      enif_clear_env(this->env);
+      enif_clear_env(worker->env);
 
       /* Take the request off the queue. */
       STAILQ_REMOVE(&anif_reqs, req, anif_req_entry, entries); anif_req_count--;
 
-      /* Now we need to remove this thread from the list of idol threads. */
+      /* Now we need to remove this thread from the list of idle threads. */
       enif_mutex_lock(anif_worker_mutex);
-      LIST_REMOVE(this, entries);
+      LIST_REMOVE(worker, entries);
 
       /* Release the locks in reverse order that we acquired them,
          so as not to self-deadlock. */
@@ -145,12 +150,12 @@ static void *anif_worker_fn(void *arg)
       enif_mutex_unlock(anif_req_mutex);
 
       /* Finally, let's do the work! :) */
-      req->assigned_to_worker = this->worker_num;
-      req->fn_work(this->env, &(req->pid), req->args);
+      req->assigned_to_worker = worker->worker_num;
+      req->fn_work(worker->env, &(req->pid), req->args);
       req->fn_post(req->args);
       enif_free(req);
     }
-  } while(1);
+  }
   enif_thread_exit(0);
   return 0;
 }

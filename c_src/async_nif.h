@@ -39,7 +39,7 @@ static ErlNifCond *anif_cnd = NULL;
 static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 
 #define ET2_2A(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_atom(env, B))
-#define ET2_1A1I(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_double(env, B))
+#define ET2_1A1I(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_int(env, B))
 
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
@@ -95,7 +95,6 @@ static void anif_enqueue_req(struct anif_req_entry *r)
   enif_mutex_lock(anif_req_mutex);
   STAILQ_INSERT_TAIL(&anif_reqs, r, entries);
   anif_req_count++;
-  fprintf(stderr, "enqueued work (q:%d)\n", anif_req_count); fflush(stderr);
   enif_mutex_unlock(anif_req_mutex);
   enif_cond_broadcast(anif_cnd);
 }
@@ -112,7 +111,6 @@ static void *anif_worker_fn(void *arg)
   do {
     /* Examine the request queue, are there things to be done? */
     enif_mutex_lock(anif_req_mutex); check_again_for_work:
-    fprintf(stderr, "wfn tid(%d):\tlooking for work (q:%d)\n", this->worker_num, anif_req_count); fflush(stderr);
     if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
       /* Queue is empty, join the list of idol workers and wait for work */
       enif_mutex_lock(anif_worker_mutex);
@@ -144,7 +142,6 @@ static void *anif_worker_fn(void *arg)
       enif_mutex_unlock(anif_req_mutex);
 
       /* Finally, let's do the work! :) */
-      fprintf(stderr, "wfn tid(%d):\tworking\n", this->worker_num); fflush(stderr);
       req->assigned_to_worker = this->worker_num;
       req->fn_work(this->env, &(req->pid), req->args);
       req->fn_post(req->args);

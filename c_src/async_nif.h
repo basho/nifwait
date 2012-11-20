@@ -1,121 +1,42 @@
 #ifndef __ASYNC_NIF_H__
 #define __ASYNC_NIF_H__
 
-/* BEGIN: include "queue.h" BSD 3-Clause License */
+/* Redefine this in your NIF implementation before including this file to
+   change the thread pool size. */
+#ifndef ANIF_MAX_WORKERS
+#define ANIF_MAX_WORKERS 64
+#endif
 
 #ifndef __offsetof
 #define __offsetof(st, m) \
      ((size_t) ( (char *)&((st *)0)->m - (char *)0 ))
 #endif
+#include "queue.h"
 
-/*
- * Singly-linked Tail queue declarations.
- */
-#define STAILQ_HEAD(name, type)                                         \
-struct name {                                                           \
-        struct type *stqh_first;/* first element */                     \
-        struct type **stqh_last;/* addr of last next element */         \
-}
-
-#define STAILQ_HEAD_INITIALIZER(head)                                   \
-        { NULL, &(head).stqh_first }
-
-#define STAILQ_ENTRY(type)                                              \
-struct {                                                                \
-        struct type *stqe_next; /* next element */                      \
-}
-
-/*
- * Singly-linked Tail queue functions.
- */
-#define STAILQ_CONCAT(head1, head2) do {                                \
-        if (!STAILQ_EMPTY((head2))) {                                   \
-                *(head1)->stqh_last = (head2)->stqh_first;              \
-                (head1)->stqh_last = (head2)->stqh_last;                \
-                STAILQ_INIT((head2));                                   \
-        }                                                               \
-} while (0)
-
-#define STAILQ_EMPTY(head)      ((head)->stqh_first == NULL)
-
-#define STAILQ_FIRST(head)      ((head)->stqh_first)
-
-#define STAILQ_FOREACH(var, head, field)                                \
-        for ((var) = STAILQ_FIRST((head));                              \
-           (var);                                                       \
-           (var) = STAILQ_NEXT((var), field))
-
-#define STAILQ_INIT(head) do {                                          \
-        STAILQ_FIRST((head)) = NULL;                                    \
-        (head)->stqh_last = &STAILQ_FIRST((head));                      \
-} while (0)
-
-#define STAILQ_INSERT_AFTER(head, tqelm, elm, field) do {               \
-        if ((STAILQ_NEXT((elm), field) = STAILQ_NEXT((tqelm), field)) == NULL)\
-                (head)->stqh_last = &STAILQ_NEXT((elm), field);         \
-        STAILQ_NEXT((tqelm), field) = (elm);                            \
-} while (0)
-
-#define STAILQ_INSERT_HEAD(head, elm, field) do {                       \
-        if ((STAILQ_NEXT((elm), field) = STAILQ_FIRST((head))) == NULL) \
-                (head)->stqh_last = &STAILQ_NEXT((elm), field);         \
-        STAILQ_FIRST((head)) = (elm);                                   \
-} while (0)
-
-#define STAILQ_INSERT_TAIL(head, elm, field) do {                       \
-        STAILQ_NEXT((elm), field) = NULL;                               \
-        *(head)->stqh_last = (elm);                                     \
-        (head)->stqh_last = &STAILQ_NEXT((elm), field);                 \
-} while (0)
-
-#define STAILQ_LAST(head, type, field)                                  \
-        (STAILQ_EMPTY((head)) ?                                         \
-                NULL :                                                  \
-                ((struct type *)                                        \
-                ((char *)((head)->stqh_last) - __offsetof(struct type, field))))
-
-#define STAILQ_NEXT(elm, field) ((elm)->field.stqe_next)
-
-#define STAILQ_REMOVE(head, elm, type, field) do {                      \
-        if (STAILQ_FIRST((head)) == (elm)) {                            \
-                STAILQ_REMOVE_HEAD((head), field);                      \
-        }                                                               \
-        else {                                                          \
-                struct type *curelm = STAILQ_FIRST((head));             \
-                while (STAILQ_NEXT(curelm, field) != (elm))             \
-                        curelm = STAILQ_NEXT(curelm, field);            \
-                if ((STAILQ_NEXT(curelm, field) =                       \
-                     STAILQ_NEXT(STAILQ_NEXT(curelm, field), field)) == NULL)\
-                        (head)->stqh_last = &STAILQ_NEXT((curelm), field);\
-        }                                                               \
-} while (0)
-
-#define STAILQ_REMOVE_HEAD(head, field) do {                            \
-        if ((STAILQ_FIRST((head)) =                                     \
-             STAILQ_NEXT(STAILQ_FIRST((head)), field)) == NULL)         \
-                (head)->stqh_last = &STAILQ_FIRST((head));              \
-} while (0)
-
-#define STAILQ_REMOVE_HEAD_UNTIL(head, elm, field) do {                 \
-        if ((STAILQ_FIRST((head)) = STAILQ_NEXT((elm), field)) == NULL) \
-                (head)->stqh_last = &STAILQ_FIRST((head));              \
-} while (0)
-/* END: include "queue.h" */
-
-struct arq_entry {
+struct anif_req_entry {
   ErlNifPid pid;
   void *args;
+  unsigned int assigned_to_worker;
   void (*fn_work)(ErlNifEnv*, ErlNifPid*, void *);
-  void (*fn_post)(ErlNifEnv*, void *);
-  STAILQ_ENTRY(arq_entry) entries;
+  void (*fn_post)(void *);
+  STAILQ_ENTRY(anif_req_entry) entries;
 };
-STAILQ_HEAD(arq, arq_entry) arq_head = STAILQ_HEAD_INITIALIZER(arq_head);
-static volatile unsigned int arq_depth;
-static ErlNifEnv *arq_nif_env;
-static ErlNifMutex *arq_mutex;
-static ErlNifCond *arq_cnd;
-static ErlNifTid arq_tid;
+STAILQ_HEAD(reqs, anif_req_entry) anif_reqs = STAILQ_HEAD_INITIALIZER(anif_reqs);
 
+struct anif_worker_entry {
+  ErlNifTid tid;
+  ErlNifEnv *env;
+  ErlNifCond *cnd;
+  unsigned int worker_num;
+  LIST_ENTRY(anif_worker_entry) entries;
+};
+LIST_HEAD(idol_workers, anif_worker_entry) anif_idol_workers = LIST_HEAD_INITIALIZER(anif_worker);
+
+static volatile unsigned int anif_req_count = 0;
+static volatile unsigned int anif_shutdown = 0;
+static ErlNifMutex *anif_req_mutex = NULL;
+static ErlNifMutex *anif_worker_mutex = NULL;
+static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 
 #define ET2_2A(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_atom(env, B))
 #define ET2_1A1I(A, B) enif_make_tuple2(env, enif_make_atom(env, A), enif_make_int(env, B))
@@ -123,116 +44,197 @@ static ErlNifTid arq_tid;
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
   static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
-    struct name ## _args *args;                                         \
-    struct arq_entry *r;                                                \
-    args = enif_alloc(sizeof(struct name ## _args));                    \
-    if (!args)                                                          \
-      return ET2_2A("error", "enomem");                                 \
-    r = enif_alloc(sizeof(struct arq_entry));                           \
-    if (!r) {                                                           \
-      enif_free(args);                                                  \
-      return ET2_2A("error", "enomem");                                 \
-    }                                                                   \
+    struct name ## _args on_stack_args;                                 \
+    struct name ## _args *args = &on_stack_args;                        \
+    struct name ## _args *copy_of_args;                                 \
+    struct anif_req_entry *r;                                           \
+    r = enif_alloc(sizeof(struct anif_req_entry));                      \
+    if (!r) return ET2_2A("error", "enomem");                           \
     do pre_block while(0);                                              \
-    void (*fn_work)(ErlNifEnv*, ErlNifPid*, struct name ## _args *) = \
+    void (*fn_work)(ErlNifEnv*, ErlNifPid*, struct name ## _args *) =   \
     ({                                                                  \
       void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) work_block \
       __fn_work__;                                                      \
     });                                                                 \
-    void (*fn_post)(ErlNifEnv*, struct name ## _args*) =                \
+    void (*fn_post)(struct name ## _args*) =                            \
     ({                                                                  \
-      void __fn_post__ (ErlNifEnv *env, struct name ## _args *args) {   \
+      void __fn_post__ (struct name ## _args *args) {                   \
         do post_block while(0);                                         \
         enif_free(args);                                                \
       }                                                                 \
       __fn_post__;                                                      \
     });                                                                 \
     if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {           \
-      fn_post(env, args);                                               \
+      fn_post(args);                                                    \
       enif_free(r);                                                     \
       return ET2_2A("error", "pid");                                    \
     }                                                                   \
-    r->args = (void *)args;                                             \
-    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;\
-    r->fn_post = (void (*)(ErlNifEnv *, void *))fn_post;                \
-    enif_mutex_lock(arq_mutex);                                         \
-    STAILQ_INSERT_TAIL(&arq_head, r, entries);                          \
-    arq_depth++;                                                        \
-    enif_mutex_unlock(arq_mutex);                                       \
-    enif_cond_signal(arq_cnd);                                          \
-    return ET2_1A1I("ok", arq_depth);                                   \
+    copy_of_args = enif_alloc(sizeof(struct name ## _args));            \
+    if (!copy_of_args) {                                                \
+      fn_post(args);                                                    \
+      enif_free(r);                                                     \
+      return ET2_2A("error", "enomem");                                 \
+    }                                                                   \
+    memcpy(copy_of_args, args, sizeof(struct name ## _args));           \
+    r->args = (void *)copy_of_args;                                     \
+    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;    \
+    r->fn_post = (void (*)(void *))fn_post;                             \
+    anif_enqueue_req(r);                                                \
+    /* TODO: We could provide #active threads too. */                   \
+    return ET2_1A1I("ok", anif_req_count);                              \
   }
 
-#define ASYNC_NIF_INIT() if (!arq_init()) return -1;
-#define ASYNC_NIF_SHUTDOWN() arq_shutdown();
+#define ASYNC_NIF_LOAD() if (anif_init() != 0) return -1;
+#define ASYNC_NIF_UNLOAD() anif_unload();
+#define ASYNC_NIF_UPGRADE() anif_unload();
 
 #define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg)
 
-static volatile int arq_alive = 0;
-static void *arq_worker_fn(void *args)
+static void anif_enqueue_req(struct anif_req_entry *r)
 {
-  struct arq_entry *e;
+  /* Add the request to the work queue. */
+  enif_mutex_lock(anif_req_mutex);
+  STAILQ_INSERT_TAIL(&anif_reqs, r, entries);
+  anif_req_count++;
+  enif_mutex_unlock(anif_req_mutex);
+}
+
+static void *anif_worker_fn(void *arg)
+{
+  struct anif_worker_entry *this = (struct anif_worker_entry *)arg;
+  struct anif_req_entry *req = NULL;
+
+  /*
+   * Workers are active while there is work on the queue to do and
+   * only in the idol list when they are waiting on new work.
+   */
   do {
-    enif_mutex_lock(arq_mutex); work:
-    e = NULL;
-    if (arq_alive && ((e = STAILQ_FIRST(&arq_head)) != NULL)) {
-      STAILQ_REMOVE_HEAD(&arq_head, entries);
-      arq_depth--;
-      enif_mutex_unlock(arq_mutex);
-      e->fn_work(arq_nif_env, &(e->pid), e->args);
-      e->fn_post(arq_nif_env, e->args);
-      enif_free(e);
+    /* Examine the request queue, are there things to be done? */
+    enif_mutex_lock(anif_req_mutex); check_again_for_work:
+    if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
+      /* Queue is empty, join the list of idol workers and wait for work */
+      enif_mutex_lock(anif_worker_mutex);
+      LIST_INSERT_HEAD(&anif_idol_workers, this, entries);
+      enif_mutex_unlock(anif_worker_mutex);
+      enif_cond_wait(this->cnd, anif_req_mutex);
+      if (anif_shutdown) {
+        enif_mutex_unlock(anif_req_mutex);
+        break; /* Exit the do/while loop. */
+      }
+      goto check_again_for_work;
     } else {
-      enif_cond_wait(arq_cnd, arq_mutex);
-      goto work;
+      /* `req` is our work request and we hold the lock.
+
+         There may be more than one request waiting on a worker thread
+         so take this opportunity to signal more threads to do work. */
+      struct anif_worker_entry *next_worker;
+      for (int num = 1; (next_worker = LIST_NEXT(next_worker, entries)); num++) {
+        if (num < (anif_req_count < ANIF_MAX_WORKERS - 1) ? anif_req_count : ANIF_MAX_WORKERS - 1)
+          enif_cond_signal(next_worker->cnd);
+      }
+
+      /* Clear the worker's environment as it's invalid after each use. */
+      enif_clear_env(this->env);
+
+      /* Take the request off the queue. */
+      STAILQ_REMOVE(&anif_reqs, req, anif_req_entry, entries); anif_req_count--;
+
+      /* Now we need to remove this thread from the list of idol threads. */
+      enif_mutex_lock(anif_worker_mutex);
+      LIST_REMOVE(this, entries);
+
+      /* Release the locks in reverse order that we acquired them,
+         so as not to self-deadlock. */
+      enif_mutex_unlock(anif_worker_mutex);
+      enif_mutex_unlock(anif_req_mutex);
+
+      /* Finally, let's do the work! :) */
+      req->assigned_to_worker = this->worker_num;
+      req->fn_work(this->env, &(req->pid), req->args);
+      req->fn_post(req->args);
+      enif_free(req);
     }
   } while(1);
+  enif_thread_exit(0);
   return 0;
 }
 
-static int arq_init(void)
+static void anif_unload(void)
 {
-  arq_nif_env = enif_alloc_env();
-  arq_mutex = enif_mutex_create("wait arq mutex");
-  arq_cnd = enif_cond_create("arq work enqueued");
-  enif_mutex_lock(arq_mutex);
-  STAILQ_INIT(&arq_head);
-  arq_depth = 0;
-  arq_alive = 1;
-  enif_mutex_unlock(arq_mutex);
-  if (!enif_thread_create("arq_worker", &arq_tid, &arq_worker_fn, NULL, NULL))
-    return errno;
-  return 0;
-}
+  /* Don't shutdown more than once at a time. */
+  if (anif_shutdown)
+    return;
 
-static void arq_shutdown(void)
-{
-  void *exit_value = 0;
-
-  /* stop, join the worker thread */
-  arq_alive = 0;
-  enif_cond_signal(arq_cnd);
-  enif_thread_join(arq_tid, &exit_value);
-
-  /* deallocate anything left in the queue */
-  enif_mutex_lock(arq_mutex);
-  struct arq_entry *e = NULL;
-  STAILQ_FOREACH(e, &arq_head, entries) {
-    STAILQ_REMOVE(&arq_head, STAILQ_LAST(&arq_head, arq_entry, entries), arq_entry, entries);
-    enif_send(NULL, &(e->pid), arq_nif_env,
-              enif_make_tuple2(arq_nif_env, enif_make_atom(arq_nif_env, "error"),
-                                            enif_make_atom(arq_nif_env, "shutdown")));
-    e->fn_post(arq_nif_env, e->args);
-    enif_free(e);
-    arq_depth--;
+  /* Signal the worker threads, stop what you're doing and exit. */
+  anif_shutdown = 1;
+  for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
+    enif_cond_signal(anif_worker_entries[i].cnd);
   }
-  enif_free_env(arq_nif_env);
-  arq_nif_env = NULL;
-  enif_mutex_unlock(arq_mutex);
-  enif_mutex_destroy(arq_mutex);
-  arq_mutex = NULL;
-  enif_cond_destroy(arq_cnd);
-  arq_cnd = NULL;
+
+  /* Join for the now exiting worker threads. */
+  for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
+    void *exit_value = 0; /* Ignore this. */
+    enif_thread_join(anif_worker_entries[i].tid, &exit_value);
+  }
+
+  /* Worker threads are stopped, now toss anything left in the queue. */
+  enif_mutex_lock(anif_req_mutex);
+  struct anif_req_entry *e = NULL;
+  STAILQ_FOREACH(e, &anif_reqs, entries) {
+    ErlNifEnv *env = anif_worker_entries[e->assigned_to_worker].env;
+    STAILQ_REMOVE(&anif_reqs, STAILQ_LAST(&anif_reqs, anif_req_entry, entries),
+                  anif_req_entry, entries);
+    enif_send(NULL, &(e->pid), env,
+              enif_make_tuple2(env, enif_make_atom(env, "error"),
+                               enif_make_atom(env, "shutdown")));
+    e->fn_post(e->args);
+    enif_free(e);
+    anif_req_count--;
+  }
+
+  /* Clean up resources owned by the now exited worker threads. */
+  for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
+    enif_free_env(anif_worker_entries[i].env);
+    enif_cond_destroy(anif_worker_entries[i].cnd);
+  }
+  /* Not strictly necessary. */
+  memset(anif_worker_entries, sizeof(struct anif_worker_entry) * ANIF_MAX_WORKERS, 0);
+
+  enif_mutex_unlock(anif_req_mutex);
+
+  enif_mutex_destroy(anif_req_mutex); anif_req_mutex = NULL;
+  enif_mutex_destroy(anif_worker_mutex); anif_worker_mutex = NULL;
+}
+
+static int anif_init(void)
+{
+  /* TODO: do we need this?
+     Don't init more than once.
+  if (anif_req_mutex)
+    return -1;
+
+  if (anif_shutdown == 1)
+    return -1;
+  */
+
+  anif_req_mutex = enif_mutex_create("anif_req stailq");
+  anif_worker_mutex = enif_mutex_create("anif_worker list");
+
+  /* Setup the requests management. */
+  anif_req_count = 0;
+
+  /* Setup the thread pool management. */
+  enif_mutex_unlock(anif_worker_mutex);
+  memset(anif_worker_entries, sizeof(struct anif_worker_entry) * ANIF_MAX_WORKERS, 0);
+  for (unsigned int i = 0; i < ANIF_MAX_WORKERS; i++) {
+    anif_worker_entries[i].worker_num = i;
+    anif_worker_entries[i].env = enif_alloc_env();
+    anif_worker_entries[i].cnd = enif_cond_create("anif_worker");
+    enif_thread_create("anif_worker", &anif_worker_entries[i].tid,
+                       &anif_worker_fn, (void*)&anif_worker_entries[i], NULL);
+  }
+  enif_mutex_unlock(anif_worker_mutex);
+  return 0;
 }
 
 #endif // __ASYNC_NIF_H__

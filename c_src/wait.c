@@ -99,18 +99,18 @@ static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 {
   ATOM_ERROR = enif_make_atom(env, "error");
   ATOM_OK = enif_make_atom(env, "ok");
-  ASYNC_NIF_INIT();
+  ASYNC_NIF_LOAD();
   return 0;
 }
 
 static void on_unload(ErlNifEnv* env, void* priv_data)
 {
-  ASYNC_NIF_SHUTDOWN()
+  ASYNC_NIF_UNLOAD()
 }
 
 static int on_upgrade(ErlNifEnv* env, void** priv_data, void** old_priv_data, ERL_NIF_TERM load_info)
 {
-  ASYNC_NIF_SHUTDOWN()
+  ASYNC_NIF_UPGRADE()
   return 0;
 }
 

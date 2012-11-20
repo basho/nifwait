@@ -43,7 +43,7 @@ sleep(Microseconds) ->
     {ok, Metric} = sleep_nif(Microseconds, self()),
     erlang:yield(),
     io:format("queue depth: ~p~n", [Metric]),
-    erlang:bump_reductions(Metric),
+    erlang:bump_reductions(Metric * 100),
     receive
         {eror, shutdown}=Error ->
             Error;

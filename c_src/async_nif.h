@@ -103,9 +103,7 @@ struct {                                                                \
 /* END: include "queue.h" */
 
 struct arq_entry {
-  ErlNifEnv* env;
   ErlNifPid pid;
-  int argc;
   void *args;
   void (*fn_work)(ErlNifEnv*, ErlNifPid*, void *);
   void (*fn_post)(ErlNifEnv*, void *);
@@ -224,7 +222,7 @@ static void arq_shutdown(void)
     enif_send(NULL, &(e->pid), arq_nif_env,
               enif_make_tuple2(arq_nif_env, enif_make_atom(arq_nif_env, "error"),
                                             enif_make_atom(arq_nif_env, "shutdown")));
-    e->fn_post(e->env, e->args);
+    e->fn_post(arq_nif_env, e->args);
     enif_free(e);
     arq_depth--;
   }

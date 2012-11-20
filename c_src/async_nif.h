@@ -182,6 +182,7 @@ static void anif_unload(void)
     enif_free(e);
     anif_req_count--;
   }
+  enif_mutex_unlock(anif_req_mutex);
 
   /* Clean up resources owned by the now exited worker threads. */
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
@@ -190,8 +191,6 @@ static void anif_unload(void)
   enif_cond_destroy(anif_cnd);
   /* Not strictly necessary. */
   memset(anif_worker_entries, sizeof(struct anif_worker_entry) * ANIF_MAX_WORKERS, 0);
-
-  enif_mutex_unlock(anif_req_mutex);
 
   enif_mutex_destroy(anif_req_mutex); anif_req_mutex = NULL;
   enif_mutex_destroy(anif_worker_mutex); anif_worker_mutex = NULL;
@@ -216,8 +215,7 @@ static int anif_init(void)
   anif_req_count = 0;
 
   /* Setup the thread pool management. */
-  enif_mutex_unlock(anif_worker_mutex);
-  memset(anif_worker_entries, sizeof(struct anif_worker_entry) * ANIF_MAX_WORKERS, 0);
+  enif_mutex_lock(anif_worker_mutex);
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; i++) {
     anif_worker_entries[i].worker_num = i;
     anif_worker_entries[i].env = enif_alloc_env();

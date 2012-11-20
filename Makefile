@@ -2,4 +2,4 @@
 CFLAGS=-std=gnu99
 
 all:
-	rm c_src/wait.o; CC=gcc CFLAGS=-fnested-functions ./rebar clean compile
+	CC=gcc CFLAGS="-std=gnu99 -Wstrict-prototypes" ./rebar clean compile

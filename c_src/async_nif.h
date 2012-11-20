@@ -107,7 +107,7 @@ struct arq_entry {
   ErlNifPid pid;
   int argc;
   void *args;
-  void (*fn_work)(ErlNifEnv*, ErlNifPid*, int, void *);
+  void (*fn_work)(ErlNifEnv*, ErlNifPid*, void *);
   void (*fn_post)(ErlNifEnv*, void *);
   STAILQ_ENTRY(arq_entry) entries;
 };
@@ -125,46 +125,52 @@ static ErlNifTid arq_tid;
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
   static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
-    struct name ## _args *args = enif_alloc(sizeof(struct name ## _args)); \
-    if (!args) return ET2_2A("error", "enomem");                        \
-    struct arq_entry *r = enif_alloc(sizeof(struct arq_entry));         \
-    if (!r) { enif_free(args); return ET2_2A("error", "enomem"); }      \
+    struct name ## _args *args;                                         \
+    struct arq_entry *r;                                                \
+    args = enif_alloc(sizeof(struct name ## _args));                    \
+    if (!args)                                                          \
+      return ET2_2A("error", "enomem");                                 \
+    r = enif_alloc(sizeof(struct arq_entry));                           \
+    if (!r) {                                                           \
+      enif_free(args);                                                  \
+      return ET2_2A("error", "enomem");                                 \
+    }                                                                   \
     do pre_block while(0);                                              \
-    void (*fn_work)(ErlNifEnv*, ErlNifPid*, int, struct name ## _args *) = \
+    void (*fn_work)(ErlNifEnv*, ErlNifPid*, struct name ## _args *) = \
     ({                                                                  \
-      void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, int argc, struct name ## _args *args) work_block \
+      void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) work_block \
       __fn_work__;                                                      \
     });                                                                 \
     void (*fn_post)(ErlNifEnv*, struct name ## _args*) =                \
     ({                                                                  \
-      void __fn_post__ (ErlNifEnv *env, struct name ## _args *args) post_block \
+      void __fn_post__ (ErlNifEnv *env, struct name ## _args *args) {   \
+        do post_block while(0);                                         \
+        enif_free(args);                                                \
+      }                                                                 \
       __fn_post__;                                                      \
     });                                                                 \
-    r->env = env;                                                       \
     if(!enif_get_local_pid(env, argv[argc - 1], &(r->pid))) {           \
       fn_post(env, args);                                               \
       enif_free(r);                                                     \
       return ET2_2A("error", "pid");                                    \
     }                                                                   \
     r->args = (void *)args;                                             \
-    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, int, void *))fn_work;\
+    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;\
     r->fn_post = (void (*)(ErlNifEnv *, void *))fn_post;                \
     enif_mutex_lock(arq_mutex);                                         \
     STAILQ_INSERT_TAIL(&arq_head, r, entries);                          \
     arq_depth++;                                                        \
-    enif_cond_signal(arq_cnd);                                          \
     enif_mutex_unlock(arq_mutex);                                       \
+    enif_cond_signal(arq_cnd);                                          \
     return ET2_1A1I("ok", arq_depth);                                   \
   }
 
 #define ASYNC_NIF_INIT() if (!arq_init()) return -1;
 #define ASYNC_NIF_SHUTDOWN() arq_shutdown();
 
-#define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg);            \
-  r->fn_post(env, args);                                                \
-  enif_free(args)                                                       \
+#define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg)
 
-static int arq_alive = 0;
+static volatile int arq_alive = 0;
 static void *arq_worker_fn(void *args)
 {
   struct arq_entry *e;
@@ -175,8 +181,8 @@ static void *arq_worker_fn(void *args)
       STAILQ_REMOVE_HEAD(&arq_head, entries);
       arq_depth--;
       enif_mutex_unlock(arq_mutex);
-      e->fn_work(e->env, &(e->pid), e->argc, e->args);
-      e->fn_post(e->env, e->args);
+      e->fn_work(arq_nif_env, &(e->pid), e->args);
+      e->fn_post(arq_nif_env, e->args);
       enif_free(e);
     } else {
       enif_cond_wait(arq_cnd, arq_mutex);
@@ -186,10 +192,10 @@ static void *arq_worker_fn(void *args)
   return 0;
 }
 
-static int arq_init()
+static int arq_init(void)
 {
   arq_nif_env = enif_alloc_env();
-  arq_mutex = enif_mutex_create("wait_arq_mutex");
+  arq_mutex = enif_mutex_create("wait arq mutex");
   arq_cnd = enif_cond_create("arq work enqueued");
   enif_mutex_lock(arq_mutex);
   STAILQ_INIT(&arq_head);
@@ -207,7 +213,7 @@ static void arq_shutdown(void)
 
   /* stop, join the worker thread */
   arq_alive = 0;
-  enif_cond_signal(arq_cnd);                                            \
+  enif_cond_signal(arq_cnd);
   enif_thread_join(arq_tid, &exit_value);
 
   /* deallocate anything left in the queue */
@@ -215,12 +221,20 @@ static void arq_shutdown(void)
   struct arq_entry *e = NULL;
   STAILQ_FOREACH(e, &arq_head, entries) {
     STAILQ_REMOVE(&arq_head, STAILQ_LAST(&arq_head, arq_entry, entries), arq_entry, entries);
+    enif_send(NULL, &(e->pid), arq_nif_env,
+              enif_make_tuple2(arq_nif_env, enif_make_atom(arq_nif_env, "error"),
+                                            enif_make_atom(arq_nif_env, "shutdown")));
     e->fn_post(e->env, e->args);
-    arq_depth--;
     enif_free(e);
+    arq_depth--;
   }
+  enif_free_env(arq_nif_env);
+  arq_nif_env = NULL;
   enif_mutex_unlock(arq_mutex);
-  enif_thread_join(arq_tid, &exit_value);
+  enif_mutex_destroy(arq_mutex);
+  arq_mutex = NULL;
+  enif_cond_destroy(arq_cnd);
+  arq_cnd = NULL;
 }
 
 #endif // __ASYNC_NIF_H__

@@ -18,7 +18,9 @@ ASYNC_NIF_DECL(busywait_nif,
     unsigned int count;
   },
   {
-    /* Pre-conditions, gather values from arguments
+    /* Check pre-conditions and gather values from arguments for
+       use later.  If you need a arg, enif_make_copy() here
+       and then in the post block be sure to call enif_free().
        Returns: {ok, Metric} | {error, Reason}
        `Metric` is just a non-descript way to say queue-depth
        which could be used to adjust the reductions and create
@@ -43,7 +45,7 @@ ASYNC_NIF_DECL(busywait_nif,
             {ok, Metric} ->
               erlang:bump_reductions(Metric * Magic),
               receive
-                {eror, discarded}=Error ->
+                {eror, shutdown}=Error ->
                     %% Work unit was not executed, requeue it.
                     Error;
                 {error, _Reason}=Error ->
@@ -61,6 +63,7 @@ ASYNC_NIF_DECL(busywait_nif,
     */
     while(args->count > 0) { args->count--; }
     ERL_NIF_TERM msg = enif_make_tuple2(env, ATOM_OK, enif_make_int(env, args->count));
+    /* or enif_make_resource(); enif_release_resource(); */
     ASYNC_NIF_REPLY(msg);
   },
   {

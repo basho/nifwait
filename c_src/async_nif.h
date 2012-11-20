@@ -1,6 +1,10 @@
 #ifndef __ASYNC_NIF_H__
 #define __ASYNC_NIF_H__
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 /* Redefine this in your NIF implementation before including this file to
    change the thread pool size. */
 #ifndef ANIF_MAX_WORKERS
@@ -226,5 +230,9 @@ static int anif_init(void)
   enif_mutex_unlock(anif_worker_mutex);
   return 0;
 }
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif // __ASYNC_NIF_H__

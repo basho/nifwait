@@ -48,9 +48,6 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
     struct name ## _args *args = &on_stack_args;                        \
     struct name ## _args *copy_of_args;                                 \
     struct anif_req_entry *r;                                           \
-    r = enif_alloc(sizeof(struct anif_req_entry));                      \
-    if (!r) return ET2_2A("error", "enomem");                           \
-    do pre_block while(0);                                              \
     void (*fn_work)(ErlNifEnv*, ErlNifPid*, struct name ## _args *) =   \
     ({                                                                  \
       void __fn_work__ (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) work_block \
@@ -64,10 +61,11 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       }                                                                 \
       __fn_post__;                                                      \
     });                                                                 \
-    if (!enif_self(env, &(r->pid))) {                                   \
+    do pre_block while(0);                                              \
+    r = enif_alloc(sizeof(struct anif_req_entry));                      \
+    if (!r) {                                                           \
       fn_post(args);                                                    \
-      enif_free(r);                                                     \
-      return ET2_2A("error", "pid");                                    \
+      return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     copy_of_args = enif_alloc(sizeof(struct name ## _args));            \
     if (!copy_of_args) {                                                \
@@ -76,6 +74,11 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     memcpy(copy_of_args, args, sizeof(struct name ## _args));           \
+    if (!enif_self(env, &(r->pid))) {                                   \
+      fn_post(args);                                                    \
+      enif_free(r);                                                     \
+      return ET2_2A("error", "pid");                                    \
+    }                                                                   \
     r->args = (void *)copy_of_args;                                     \
     r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work;    \
     r->fn_post = (void (*)(void *))fn_post;                             \

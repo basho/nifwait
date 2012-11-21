@@ -131,7 +131,7 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 #define ASYNC_NIF_RETURN_BADARG() ASYNC_NIF_PRE_RETURN_CLEANUP(); return enif_make_badarg(env_in);
 
 #define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg)
-#define ASYNC_NIF_REF_REPLY(msg) ASYNC_NIF_REPLY(enif_make_tuple2(args->ref, msg))
+#define ASYNC_NIF_REF_REPLY(msg) ASYNC_NIF_REPLY(enif_make_tuple2(env, args->ref, msg))
 
 static void anif_enqueue_req(struct anif_req_entry *r)
 {

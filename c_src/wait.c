@@ -36,7 +36,7 @@ ASYNC_NIF_DECL(busywait_nif,
        right thing (read: slow down calls to this NIF when the work
        queue backs up because the worker threads can't keep up). */
     if(!enif_get_uint(env, argv[0], &args->count))
-      ASNC_NIF_RETURN_BADARG();
+      ASYNC_NIF_RETURN_BADARG();
 
     /* or
     if(!enif_get_uint(env, argv[0], &args->count)) {

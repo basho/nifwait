@@ -19,13 +19,22 @@ ASYNC_NIF_DECL(busywait_nif,
   },
   {
     /* Check pre-conditions and gather values from arguments for
-       use later.  If you need a arg, enif_make_copy() here
-       and then in the post block be sure to call enif_free().
+       use later.
+       `env` is an ErlNifEnv that will be available in the work_block.
+       `argv` is a copy of what's passed into the NIF, so using these
+       you can safely do: enif_inspect_binary(env, bin_term, argv[1])
+       and then stash the `bin_term` off in the struct frame above
+       for use during your work block below.
+
+       This is the block that returns back to the BEAM on the scheduler
+       thread.
+
        Returns: {ok, Metric} | {error, Reason}
-       `Metric` is just a non-descript way to say queue-depth
-       which could be used to adjust the reductions and create
-       back pressure in the VM and help the scheduler do the
-       right thing. */
+       `Metric` is just a non-descript way to say (right now) work
+       queue-depth which could be used to adjust the reductions and
+       create back pressure in the BEAM and help the scheduler do the
+       right thing (read: slow down calls to this NIF when the work
+       queue backs up because the worker threads can't keep up). */
     if(!enif_get_uint(env, argv[0], &args->count))
       return ATOM_ERROR;
   },

@@ -19,6 +19,7 @@ extern "C" {
 
 struct anif_req_entry {
   ErlNifPid pid;
+  ErlNifEnv *env;
   void *args;
   unsigned int assigned_to_worker;
   void (*fn_work)(ErlNifEnv*, ErlNifPid*, void *);
@@ -29,7 +30,6 @@ STAILQ_HEAD(reqs, anif_req_entry) anif_reqs = STAILQ_HEAD_INITIALIZER(anif_reqs)
 
 struct anif_worker_entry {
   ErlNifTid tid;
-  ErlNifEnv *env;
   unsigned int worker_num;
   LIST_ENTRY(anif_worker_entry) entries;
 };
@@ -53,35 +53,60 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
     do post_block while(0);                                             \
   enif_free(args);                                                      \
   }                                                                     \
-  static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
+  static ERL_NIF_TERM name(ErlNifEnv* env_in, int argc, const ERL_NIF_TERM argv_in[]) { \
     struct name ## _args on_stack_args;                                 \
     struct name ## _args *args = &on_stack_args;                        \
     struct name ## _args *copy_of_args;                                 \
-    struct anif_req_entry *r;                                           \
+    struct anif_req_entry *r = NULL;                                    \
     ErlNifPid pid;                                                      \
-    if (!enif_self(env, &pid))                                          \
-      return ET2_2A("error", "pid");                                    \
+    ErlNifEnv *env = NULL;                                              \
+    ERL_NIF_TERM *argv = NULL;                                          \
     if (anif_shutdown) {                                                \
-      enif_send(NULL, &pid, env,                                        \
-                enif_make_tuple2(env, enif_make_atom(env, "error"),     \
-                                 enif_make_atom(env, "shutdown")));     \
+      enif_send(NULL, &pid, env_in,                                     \
+                enif_make_tuple2(env_in, enif_make_atom(env_in, "error"), \
+                                 enif_make_atom(env_in, "shutdown")));  \
       return ET2_2A("error", "shutdown");                               \
     }                                                                   \
+    env = enif_alloc_env();                                             \
+    if (!env)                                                           \
+      return ET2_2A("error", "enomem");                                 \
+    argv = enif_alloc(sizeof(ERL_NIF_TERM) * argc);                     \
+    if (!argv) {                                                        \
+      enif_free_env(env);                                               \
+      return ET2_2A("error", "enomem");                                 \
+    }                                                                   \
+    for (unsigned int i = 0; i < argc; i++) {                           \
+      argv[i] = enif_make_copy(env, argv_in[i]);                        \
+      if (!argv[i]) {                                                   \
+        enif_free(argv);                                                \
+        enif_free_env(env);                                             \
+        return ET2_2A("error", "enomem");                               \
+      }                                                                 \
+    }                                                                   \
+    if (!enif_self(env_in, &pid)) {                                     \
+      enif_free(argv);                                                  \
+      enif_free_env(env);                                               \
+      return ET2_2A("error", "pid");                                    \
+    }                                                                   \
     do pre_block while(0);                                              \
+    enif_free(argv);                                                    \
     r = (struct anif_req_entry*)enif_alloc(sizeof(struct anif_req_entry)); \
     if (!r) {                                                           \
       fn_post_ ## name (args);                                          \
+      enif_free_env(env);                                               \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     copy_of_args = (struct name ## _args *)enif_alloc(sizeof(struct name ## _args)); \
     if (!copy_of_args) {                                                \
       fn_post_ ## name (args);                                          \
+      enif_free_env(env);                                               \
       enif_free(r);                                                     \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     memcpy(copy_of_args, args, sizeof(struct name ## _args));           \
     memcpy(&(r->pid), &pid, sizeof(ErlNifPid));                         \
     r->args = (void *)copy_of_args;                                     \
+    r->env = env;                                                       \
     r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work_ ## name ; \
     r->fn_post = (void (*)(void *))fn_post_ ## name;                    \
     anif_enqueue_req(r);                                                \
@@ -128,9 +153,6 @@ static void *anif_worker_fn(void *arg)
       /* `req` is our work request and we hold the lock. */
       enif_cond_broadcast(anif_cnd);
 
-      /* Clear the worker's environment as it's invalid after each use. */
-      enif_clear_env(worker->env);
-
       /* Take the request off the queue. */
       STAILQ_REMOVE(&anif_reqs, req, anif_req_entry, entries); anif_req_count--;
 
@@ -145,8 +167,9 @@ static void *anif_worker_fn(void *arg)
 
       /* Finally, let's do the work! :) */
       req->assigned_to_worker = worker->worker_num;
-      req->fn_work(worker->env, &(req->pid), req->args);
+      req->fn_work(req->env, &(req->pid), req->args);
       req->fn_post(req->args);
+      enif_free_env(req->env);
       enif_free(req);
     }
   } while(1);
@@ -175,22 +198,18 @@ static void anif_unload(void)
   /* Worker threads are stopped, now toss anything left in the queue. */
   struct anif_req_entry *e = NULL;
   STAILQ_FOREACH(e, &anif_reqs, entries) {
-    ErlNifEnv *env = anif_worker_entries[e->assigned_to_worker].env;
     STAILQ_REMOVE(&anif_reqs, STAILQ_LAST(&anif_reqs, anif_req_entry, entries),
                   anif_req_entry, entries);
-    enif_send(NULL, &(e->pid), env,
-              enif_make_tuple2(env, enif_make_atom(env, "error"),
-                               enif_make_atom(env, "shutdown")));
+    enif_send(NULL, &(e->pid), e->env,
+              enif_make_tuple2(e->env, enif_make_atom(e->env, "error"),
+                               enif_make_atom(e->env, "shutdown")));
     e->fn_post(e->args);
+    enif_free_env(e->env);
     enif_free(e);
     anif_req_count--;
   }
   enif_mutex_unlock(anif_req_mutex);
 
-  /* Clean up resources owned by the now exited worker threads. */
-  for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
-    enif_free_env(anif_worker_entries[i].env);
-  }
   enif_cond_destroy(anif_cnd);
   /* Not strictly necessary. */
   memset(anif_worker_entries, sizeof(struct anif_worker_entry) * ANIF_MAX_WORKERS, 0);
@@ -215,7 +234,6 @@ static int anif_init(void)
   enif_mutex_lock(anif_worker_mutex);
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; i++) {
     anif_worker_entries[i].worker_num = i;
-    anif_worker_entries[i].env = enif_alloc_env();
     enif_thread_create(NULL, &anif_worker_entries[i].tid,
                        &anif_worker_fn, (void*)&anif_worker_entries[i], NULL);
   }

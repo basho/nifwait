@@ -126,9 +126,9 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 #define ASYNC_NIF_UNLOAD() anif_unload();
 #define ASYNC_NIF_UPGRADE() anif_unload();
 
-#define ASYNC_NIF_RETURN_BADARG() enif_make_badarg(env_in)
 #define ASYNC_NIF_PRE_ENV() env_in
 #define ASYNC_NIF_PRE_RETURN_CLEANUP() enif_free(argv); enif_free_env(env);
+#define ASYNC_NIF_RETURN_BADARG() ASYNC_NIF_PRE_RETURN_CLEANUP(); return enif_make_badarg(env_in);
 
 #define ASYNC_NIF_REPLY(msg) enif_send(NULL, pid, env, msg)
 

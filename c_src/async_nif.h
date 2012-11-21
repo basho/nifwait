@@ -6,7 +6,11 @@ extern "C" {
 #endif
 
 /* Redefine this in your NIF implementation before including this file to
-   change the thread pool size. */
+   change the thread pool size.  The maximum number of threads might be
+   bounded on your OS.  For instance, to allow 1,000,000 threads on a Linux
+   system you must do the following before launching the process.
+     echo 1000000 > /proc/sys/kernel/threads-max
+   and for all UNIX systems there will be ulimit maximums. */
 #ifndef ANIF_MAX_WORKERS
 #define ANIF_MAX_WORKERS 64
 #endif
@@ -51,7 +55,7 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
        work_block                                                       \
   static void fn_post_ ## name (struct name ## _args *args) {           \
     do post_block while(0);                                             \
-  enif_free(args);                                                      \
+    enif_free(args);                                                    \
   }                                                                     \
   static ERL_NIF_TERM name(ErlNifEnv* env_in, int argc, const ERL_NIF_TERM argv_in[]) { \
     struct name ## _args on_stack_args;                                 \
@@ -70,7 +74,7 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
     env = enif_alloc_env();                                             \
     if (!env)                                                           \
       return ET2_2A("error", "enomem");                                 \
-    argv = enif_alloc(sizeof(ERL_NIF_TERM) * argc);                     \
+    argv = (ERL_NIF_TERM *)enif_alloc(sizeof(ERL_NIF_TERM) * argc);     \
     if (!argv) {                                                        \
       enif_free_env(env);                                               \
       return ET2_2A("error", "enomem");                                 \

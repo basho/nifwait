@@ -2,6 +2,28 @@
 -compile(export_all).
 -on_load(init/0).
 
+-define(ASYNC_NIF_CALL(Fun, Args),
+        begin
+            Ref = erlang:make_ref(),
+            case erlang:apply(?MODULE, Fun, [Ref|Args]) of
+                {ok, Metric} ->
+                    io:format("queue depth: ~p~n", [Metric]),
+                    erlang:bump_reductions(Metric * 100), %% TODO: 100 is a *guess*
+                    receive
+                        {Ref, Reply} ->
+                            Reply
+                    end;
+                Other -> Other
+            end
+        end).
+
+%% These are called via erlang:apply/3 within ASYNC_NIF_CALL()s
+-compile([{nowarn_unused_function,
+           [
+            {sleep_nif, 2}
+           ]}]).
+
+
 %%  N = number of spawned procs
 %%  W = microseconds spent waiting in NIF
 %%  R = number of repeat calls to NIF
@@ -33,18 +55,14 @@ spawn_n(N, F) ->
 busywait(0) ->
     ok;
 busywait(N) ->
+    %ASYNC_NIF_CALL(busywait_nif, [N]).
     busywait(N-1).
 
-busywait_nif(_Count) ->
+busywait_nif(_Ref, _Count) ->
     not_loaded.
 
 sleep(Microseconds) ->
-    Timeout = 2 * Microseconds,
-    {ok, Metric} = sleep_nif(Microseconds),
-    erlang:yield(),
-    io:format("queue depth: ~p~n", [Metric]),
-    erlang:bump_reductions(Metric * 100),
-    receive
+    case ?ASYNC_NIF_CALL(sleep_nif, [Microseconds]) of
         {eror, shutdown}=Error ->
             Error;
         {error, _Reason}=Error ->
@@ -52,12 +70,9 @@ sleep(Microseconds) ->
         {ok, Slept} ->
             io:format("slept ~p~n", [Slept]),
             ok
-    after
-        Timeout ->
-            throw({error, timeout, erlang:make_ref()})
     end.
 
-sleep_nif(_Microseconds) ->
+sleep_nif(_Ref, _Microseconds) ->
     not_loaded.
 
 init() ->

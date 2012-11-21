@@ -109,8 +109,8 @@ ASYNC_NIF_DECL(sleep_nif,
 
 static ErlNifFunc nif_funcs[] =
 {
-  {"busywait_nif", 1, busywait_nif},
-  {"sleep_nif", 1, sleep_nif}
+  {"busywait_nif", 2, busywait_nif},
+  {"sleep_nif", 2, sleep_nif}
 };
 
 static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)

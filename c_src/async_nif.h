@@ -47,11 +47,11 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
-  static void fn_work ## name (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) \
+  static void fn_work_ ## name (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) \
        work_block                                                       \
-  static void fn_post ## name (struct name ## _args *args) {            \
+  static void fn_post_ ## name (struct name ## _args *args) {           \
     do post_block while(0);                                             \
-    enif_free(args);                                                    \
+  enif_free(args);                                                      \
   }                                                                     \
   static ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) { \
     struct name ## _args on_stack_args;                                 \
@@ -68,22 +68,22 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       return ET2_2A("error", "shutdown");                               \
     }                                                                   \
     do pre_block while(0);                                              \
-    r = enif_alloc(sizeof(struct anif_req_entry));                      \
+    r = (struct anif_req_entry*)enif_alloc(sizeof(struct anif_req_entry)); \
     if (!r) {                                                           \
-      fn_post ## name (args);                                           \
+      fn_post_ ## name (args);                                          \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
-    copy_of_args = enif_alloc(sizeof(struct name ## _args));            \
+    copy_of_args = (struct name ## _args *)enif_alloc(sizeof(struct name ## _args)); \
     if (!copy_of_args) {                                                \
-      fn_post ## name (args);                                           \
+      fn_post_ ## name (args);                                          \
       enif_free(r);                                                     \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     memcpy(copy_of_args, args, sizeof(struct name ## _args));           \
     memcpy(&(r->pid), &pid, sizeof(ErlNifPid));                         \
     r->args = (void *)copy_of_args;                                     \
-    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work ## name ; \
-    r->fn_post = (void (*)(void *))fn_post ## name;                     \
+    r->fn_work = (void (*)(ErlNifEnv *, ErlNifPid*, void *))fn_work_ ## name ; \
+    r->fn_post = (void (*)(void *))fn_post_ ## name;                    \
     anif_enqueue_req(r);                                                \
     return ET2_1A1I("ok", anif_req_count);                              \
   }
@@ -204,9 +204,9 @@ static int anif_init(void)
   /* Don't init more than once. */
   if (anif_req_mutex) return 0;
 
-  anif_req_mutex = enif_mutex_create("anif_req stailq");
-  anif_worker_mutex = enif_mutex_create("anif_worker list");
-  anif_cnd = enif_cond_create("anif_worker");
+  anif_req_mutex = enif_mutex_create(NULL);
+  anif_worker_mutex = enif_mutex_create(NULL);
+  anif_cnd = enif_cond_create(NULL);
 
   /* Setup the requests management. */
   anif_req_count = 0;
@@ -216,7 +216,7 @@ static int anif_init(void)
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; i++) {
     anif_worker_entries[i].worker_num = i;
     anif_worker_entries[i].env = enif_alloc_env();
-    enif_thread_create("anif_worker", &anif_worker_entries[i].tid,
+    enif_thread_create(NULL, &anif_worker_entries[i].tid,
                        &anif_worker_fn, (void*)&anif_worker_entries[i], NULL);
   }
   enif_mutex_unlock(anif_worker_mutex);

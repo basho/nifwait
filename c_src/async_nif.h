@@ -116,16 +116,13 @@ static void *anif_worker_fn(void *arg)
   do {
     /* Examine the request queue, are there things to be done? */
     enif_mutex_lock(anif_req_mutex); check_again_for_work:
+    if (anif_shutdown) { enif_mutex_unlock(anif_req_mutex); break; }
     if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
       /* Queue is empty, join the list of idle workers and wait for work */
       enif_mutex_lock(anif_worker_mutex);
       LIST_INSERT_HEAD(&anif_idle_workers, worker, entries);
       enif_mutex_unlock(anif_worker_mutex);
       enif_cond_wait(anif_cnd, anif_req_mutex);
-      if (anif_shutdown) {
-        enif_mutex_unlock(anif_req_mutex);
-        break; /* Exit the do/while loop. */
-      }
       goto check_again_for_work;
     } else {
       /* `req` is our work request and we hold the lock. */
@@ -159,22 +156,11 @@ static void *anif_worker_fn(void *arg)
 
 static void anif_unload(void)
 {
-  struct anif_req_entry *first = NULL;
-
-  /* Don't shutdown more than once at a time. */
-  if (anif_shutdown) /* TODO */
-    return;
-
-  /* Dance a bit so we shake out all the worker threads from either doing
-     work, sleeping or something in the middle. */
+  /* Signal the worker threads, stop what you're doing and exit. */
   enif_mutex_lock(anif_req_mutex);
   anif_shutdown = 1;
-  first = STAILQ_FIRST(&anif_reqs);
-  STAILQ_FIRST(&anif_reqs) = NULL;
-  enif_mutex_unlock(anif_req_mutex);
-
-  /* Signal the worker threads, stop what you're doing and exit. */
   enif_cond_broadcast(anif_cnd);
+  enif_mutex_unlock(anif_req_mutex);
 
   /* Join for the now exiting worker threads. */
   for (unsigned int i = 0; i < ANIF_MAX_WORKERS; ++i) {
@@ -185,7 +171,6 @@ static void anif_unload(void)
   /* We won't get here until all threads have exited.
      Patch things up, and carry on. */
   enif_mutex_lock(anif_req_mutex);
-  STAILQ_FIRST(&anif_reqs) = first;
 
   /* Worker threads are stopped, now toss anything left in the queue. */
   struct anif_req_entry *e = NULL;
@@ -216,14 +201,8 @@ static void anif_unload(void)
 
 static int anif_init(void)
 {
-  /* TODO: do we need this?
-     Don't init more than once.
-  if (anif_req_mutex)
-    return -1;
-
-  if (anif_shutdown == 1)
-    return -1;
-  */
+  /* Don't init more than once. */
+  if (anif_req_mutex) return 0;
 
   anif_req_mutex = enif_mutex_create("anif_req stailq");
   anif_worker_mutex = enif_mutex_create("anif_worker list");

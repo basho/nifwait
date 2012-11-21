@@ -48,7 +48,7 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
 #define ASYNC_NIF_DECL(name, frame, pre_block, work_block, post_block)  \
   struct name ## _args frame;                                           \
   static void fn_work ## name (ErlNifEnv *env, ErlNifPid *pid, struct name ## _args *args) \
-       work_block;                                                      \
+       work_block                                                       \
   static void fn_post ## name (struct name ## _args *args) {            \
     do post_block while(0);                                             \
     enif_free(args);                                                    \
@@ -70,12 +70,12 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
     do pre_block while(0);                                              \
     r = enif_alloc(sizeof(struct anif_req_entry));                      \
     if (!r) {                                                           \
-      fn_post ## name (args);                                                    \
+      fn_post ## name (args);                                           \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
     copy_of_args = enif_alloc(sizeof(struct name ## _args));            \
     if (!copy_of_args) {                                                \
-      fn_post ## name (args);                                                    \
+      fn_post ## name (args);                                           \
       enif_free(r);                                                     \
       return ET2_2A("error", "enomem");                                 \
     }                                                                   \
@@ -113,10 +113,10 @@ static void *anif_worker_fn(void *arg)
    * Workers are active while there is work on the queue to do and
    * only in the idle list when they are waiting on new work.
    */
-  while(!anif_shutdown) {
+  do {
     /* Examine the request queue, are there things to be done? */
     enif_mutex_lock(anif_req_mutex); check_again_for_work:
-    if (!anif_shutdown && (req = STAILQ_FIRST(&anif_reqs)) == NULL) {
+    if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
       /* Queue is empty, join the list of idle workers and wait for work */
       enif_mutex_lock(anif_worker_mutex);
       LIST_INSERT_HEAD(&anif_idle_workers, worker, entries);
@@ -152,19 +152,28 @@ static void *anif_worker_fn(void *arg)
       req->fn_post(req->args);
       enif_free(req);
     }
-  }
+  } while(1);
   enif_thread_exit(0);
   return 0;
 }
 
 static void anif_unload(void)
 {
+  struct anif_req_entry *first = NULL;
+
   /* Don't shutdown more than once at a time. */
   if (anif_shutdown) /* TODO */
     return;
 
-  /* Signal the worker threads, stop what you're doing and exit. */
+  /* Dance a bit so we shake out all the worker threads from either doing
+     work, sleeping or something in the middle. */
+  enif_mutex_lock(anif_req_mutex);
   anif_shutdown = 1;
+  first = STAILQ_FIRST(&anif_reqs);
+  STAILQ_FIRST(&anif_reqs) = NULL;
+  enif_mutex_unlock(anif_req_mutex);
+
+  /* Signal the worker threads, stop what you're doing and exit. */
   enif_cond_broadcast(anif_cnd);
 
   /* Join for the now exiting worker threads. */
@@ -173,8 +182,12 @@ static void anif_unload(void)
     enif_thread_join(anif_worker_entries[i].tid, &exit_value);
   }
 
-  /* Worker threads are stopped, now toss anything left in the queue. */
+  /* We won't get here until all threads have exited.
+     Patch things up, and carry on. */
   enif_mutex_lock(anif_req_mutex);
+  STAILQ_FIRST(&anif_reqs) = first;
+
+  /* Worker threads are stopped, now toss anything left in the queue. */
   struct anif_req_entry *e = NULL;
   STAILQ_FOREACH(e, &anif_reqs, entries) {
     ErlNifEnv *env = anif_worker_entries[e->assigned_to_worker].env;

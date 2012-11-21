@@ -36,7 +36,14 @@ ASYNC_NIF_DECL(busywait_nif,
        right thing (read: slow down calls to this NIF when the work
        queue backs up because the worker threads can't keep up). */
     if(!enif_get_uint(env, argv[0], &args->count))
-      return ATOM_ERROR;
+      ASNC_NIF_RETURN_BADARG();
+
+    /* or
+    if(!enif_get_uint(env, argv[0], &args->count)) {
+      ASYNC_NIF_PRE_RETURN_CLEANUP();
+      return enif_make_badarg(env_in);
+    }
+    */
   },
   {
     /* Perform work in this block, sends async reply to calling process.

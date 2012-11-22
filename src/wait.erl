@@ -5,7 +5,7 @@
 -define(ASYNC_NIF_CALL(Fun, Args),
         begin
             Ref = erlang:make_ref(),
-            case erlang:apply(?MODULE, Fun, [Ref|Args]) of
+            case erlang:apply(Fun, [Ref|Args]) of
                 {ok, Metric} ->
                     io:format("queue depth: ~p~n", [Metric]),
                     erlang:bump_reductions(Metric * 100), %% TODO: 100 is a *guess*
@@ -55,14 +55,14 @@ spawn_n(N, F) ->
 busywait(0) ->
     ok;
 busywait(N) ->
-    %ASYNC_NIF_CALL(busywait_nif, [N]).
+    %ASYNC_NIF_CALL(fun busywait_nif/2, [N]).
     busywait(N-1).
 
 busywait_nif(_Ref, _Count) ->
     not_loaded.
 
 sleep(Microseconds) ->
-    case ?ASYNC_NIF_CALL(sleep_nif, [Microseconds]) of
+    case ?ASYNC_NIF_CALL(fun sleep_nif/2, [Microseconds]) of
         {eror, shutdown}=Error ->
             Error;
         {error, _Reason}=Error ->

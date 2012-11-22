@@ -82,13 +82,13 @@ static struct anif_worker_entry anif_worker_entries[ANIF_MAX_WORKERS];
       return enif_make_tuple2(env_in, enif_make_atom(env_in, "error"),  \
                               enif_make_atom(env_in, "enomem"));        \
     }                                                                   \
-    argv = (ERL_NIF_TERM *)enif_alloc(sizeof(ERL_NIF_TERM) * (argc - 1)); \
+    argv = (ERL_NIF_TERM *)enif_alloc(sizeof(ERL_NIF_TERM) * argc);     \
     if (!argv) {                                                        \
       enif_free_env(env);                                               \
       return enif_make_tuple2(env_in, enif_make_atom(env_in, "error"),  \
                               enif_make_atom(env_in, "enomem"));        \
     }                                                                   \
-    for (unsigned int i = 0; i < argc; i++) {                     \
+    for (int i = 0; i < argc; i++) {                                    \
       argv[i] = enif_make_copy(env, argv_in[(i + 1)]);                  \
       if (!argv[i]) {                                                   \
         enif_free(argv);                                                \

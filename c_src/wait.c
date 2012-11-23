@@ -51,27 +51,20 @@ ASYNC_NIF_DECL(busywait_nif,
        An call into a NIF function that doesn't block the scheduler
        always looks like:
  
-       do_something_async_nif(_Arg1, _Arg2) ->
+       do_something_async_nif(_Ref, _Arg1, _Arg2) ->
          nif_not_loaded.
 
        do_something(AnArg, AnotherArg) ->
          Result =
-          case do_something_async_nif(Arg1, Arg2) of
-            {ok, Metric} ->
-              erlang:bump_reductions(Metric * Magic),
-              receive
-                {eror, shutdown}=Error ->
-                    %% Work unit was not executed, requeue it.
-                    Error;
-                {error, _Reason}=Error ->
-                    %% Work unit returned an error.
-                    Error;
-                {ok, Result} ->
-                    Result
-            after
-                Timeout ->
-                    throw({error, timeout, erlang:make_ref()})
-            end
+          case ?ASYNC_NIF_CALL(fun do_something_async_nif/3, [Arg1, Arg2]) of
+            {error, shutdown}=Error ->
+              %% Work unit was not executed, requeue it.
+              Error;
+            {error, _Reason}=Error ->
+              %% Work unit returned an error.
+              Error;
+            {ok, Result} ->
+              Result
           end,
           ...
         end.

@@ -17,13 +17,6 @@
             end
         end).
 
-%% These are called via erlang:apply/3 within ASYNC_NIF_CALL()s
--compile([{nowarn_unused_function,
-           [
-            {sleep_nif, 2}
-           ]}]).
-
-
 %%  N = number of spawned procs
 %%  W = microseconds spent waiting in NIF
 %%  R = number of repeat calls to NIF
@@ -55,7 +48,16 @@ spawn_n(N, F) ->
 busywait(0) ->
     ok;
 busywait(N) ->
-    %ASYNC_NIF_CALL(fun busywait_nif/2, [N]).
+    %% case ASYNC_NIF_CALL(fun busywait_nif/2, [N]) of
+    %%     {error, shutdown}=Error ->
+    %%         %% Work unit was not executed, requeue it.
+    %%         Error;
+    %%     {error, _Reason}=Error ->
+    %%         %% Work unit returned an error.
+    %%         Error;
+    %%     {ok, Result} ->
+    %%         Result
+    %% end.
     busywait(N-1).
 
 busywait_nif(_Ref, _Count) ->

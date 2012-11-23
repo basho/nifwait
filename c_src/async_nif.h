@@ -161,13 +161,14 @@ static void *anif_worker_fn(void *arg)
    */
   for(;;) {
     /* Examine the request queue, are there things to be done? */
-    enif_mutex_lock(anif_req_mutex); check_again_for_work:
+    enif_mutex_lock(anif_req_mutex);
+    enif_mutex_lock(anif_worker_mutex);
+    LIST_INSERT_HEAD(&anif_idle_workers, worker, entries);
+    enif_mutex_unlock(anif_worker_mutex);
+    check_again_for_work:
     if (anif_shutdown) { enif_mutex_unlock(anif_req_mutex); break; }
     if ((req = STAILQ_FIRST(&anif_reqs)) == NULL) {
       /* Queue is empty, join the list of idle workers and wait for work */
-      enif_mutex_lock(anif_worker_mutex);
-      LIST_INSERT_HEAD(&anif_idle_workers, worker, entries);
-      enif_mutex_unlock(anif_worker_mutex);
       enif_cond_wait(anif_cnd, anif_req_mutex);
       goto check_again_for_work;
     } else {

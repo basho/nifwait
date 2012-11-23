@@ -191,11 +191,10 @@ static void *anif_worker_fn(void *arg)
       ErlNifPid pid;
       enif_get_local_pid(req->env, req->pid, &pid);
       req->fn_work(req->env, req->ref, &pid, req->args);
-      ErlNifEnv *env = req->env;
       req->fn_post(req->args);
       enif_free(req->args);
       enif_free(req->argv);
-      enif_free_env(env);
+      enif_free_env(req->env);
       enif_free(req);
     }
   }

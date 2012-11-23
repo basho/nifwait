@@ -159,7 +159,7 @@ static void *anif_worker_fn(void *arg)
    * Workers are active while there is work on the queue to do and
    * only in the idle list when they are waiting on new work.
    */
-  do {
+  for(;;) {
     /* Examine the request queue, are there things to be done? */
     enif_mutex_lock(anif_req_mutex); check_again_for_work:
     if (anif_shutdown) { enif_mutex_unlock(anif_req_mutex); break; }
@@ -197,7 +197,7 @@ static void *anif_worker_fn(void *arg)
       enif_free_env(env);
       enif_free(req);
     }
-  } while(1);
+  }
   enif_thread_exit(0);
   return 0;
 }

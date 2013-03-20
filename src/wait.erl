@@ -3,27 +3,37 @@
 -on_load(init/0).
 
 %%  N = number of spawned procs
-%%  W = microseconds spent waiting in NIF
-%%  R = number of repeat calls to NIF
+%%  W = size of binary (in bytes) to MD5
+%%  R = number of repeat calls MD5
 %% BW = iterations of pure Erlang busy wait
 %%
-%% Example that piled up single scheduler for me:
-%% wait:run(100,300000, 5, 10000).
-%% wait:run(50,300000, 10, 5000000).
-%% wait:run(50,300000, 5, 50000000).
-%% wait:run(50,300000, 5, 100000000).
-%% wait:run(50,300000, 5, 200000000).
+run([NS, WS, RS, BWS]) ->
+    run(list_to_integer(NS),
+        list_to_integer(WS),
+        list_to_integer(RS),
+        list_to_integer(BWS)).
+
 run(N,W,R,BW) ->
     Repeat = lists:seq(1,R),
+    Bin = random_binary(W, <<>>),
     spawn_n(N, fun() ->
-                       erlang:display(erlang:statistics(run_queues)),
-                       [sleep_nif(W) || _ <- Repeat],
-                       erlang:display(erlang:statistics(run_queues)),
-                       busywait(BW),
-                       erlang:display(process_info(self(), [reductions])),
-                       erlang:display(erlang:statistics(run_queues))
+                       report(),
+                       lists:foreach(fun(_) ->
+                                             report(),
+                                             M1 = crypto:md5_init(),
+                                             M2 = crypto:md5_update(M1, Bin),
+                                             crypto:md5_final(M2),
+                                             busywait(BW)
+                                     end, Repeat),
+                       report(),
+                       report()
                end).
 
+report() ->
+    {reductions, Reds} = process_info(self(), reductions),
+    RQ = erlang:statistics(run_queues),
+    erlang:display({RQ, Reds}).
+   
 spawn_n(0, _) ->
     ok;
 spawn_n(N, F) ->
@@ -47,3 +57,9 @@ init() ->
             NIF = filename:join([filename:dirname(Filename),"../priv", "wait"]),
             erlang:load_nif(NIF, 0)
     end.
+
+random_binary(0, Bin) ->
+    Bin;
+random_binary(N, Bin) ->
+    X = random:uniform(255),
+    random_binary(N-1, <<Bin/binary, X:8/integer>>).
